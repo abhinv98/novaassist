@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>NovaAssist</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#1a1a1a;border-radius:2px}
+body{font-family:Inter,system-ui,sans-serif;background:#000;color:#fff;overflow:hidden;height:100vh}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.pulse-border{animation:pb 1.5s ease-in-out infinite}
+@keyframes pb{0%,100%{opacity:1}50%{opacity:.5}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ─── Electron API types ────────────────────────────────────────────────────────
+
+
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+
+
+
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function getTimestamp() {
+  const now = new Date();
+  return [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join(":");
+}
+
+const INITIAL_ACTIONS = [
+  { id: 1, time: "—", text: "System initialized" },
+  { id: 2, time: "—", text: "Nova 2 Sonic model loaded" },
+  { id: 3, time: "—", text: "Nova Act agent ready" },
+  { id: 4, time: "—", text: "Screen capture module active" },
+  { id: 5, time: "—", text: "Awaiting input..." },
+];
+
+// ─── Icons ────────────────────────────────────────────────────────────────────
+
+function MicIcon({ style }) {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={style}
+    >
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" x2="12" y1="19" y2="22" />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m22 2-7 20-4-9-9-4Z" />
+      <path d="M22 2 11 13" />
+    </svg>
+  );
+}
+
+function SpinnerIcon({ style }) {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      style={style}
+    >
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+    </svg>
+  );
+}
+
+// ─── ToggleSwitch ─────────────────────────────────────────────────────────────
+
+function ToggleSwitch({ checked, onChange }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      style={{
+        width: "32px",
+        height: "18px",
+        borderRadius: "9px",
+        position: "relative",
+        backgroundColor: checked ? "#0070f3" : "#1a1a1a",
+        border: `1px solid ${checked ? "#0070f3" : "#2a2a2a"}`,
+        cursor: "pointer",
+        transition: "all 150ms ease",
+        outline: "none",
+        flexShrink: 0,
+      }}
+    >
+      <span
+        style={{
+          position: "absolute",
+          top: "2px",
+          left: checked ? "13px" : "2px",
+          width: "12px",
+          height: "12px",
+          borderRadius: "50%",
+          backgroundColor: "#fff",
+          transition: "left 150ms ease",
+          display: "block",
+        }}
+      />
+    </button>
+  );
+}
+
+// ─── ActionLog ────────────────────────────────────────────────────────────────
+
+function ActionLog({ actions }) {
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [actions]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <span
+        style={{
+          fontSize: "11px",
+          color: "#555",
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          fontWeight: 500,
+          marginBottom: "12px",
+          display: "block",
+        }}
+      >
+        Action Log
+      </span>
+      <div
+        ref={scrollRef}
+        className="scrollbar-thin"
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          gap: "1px",
+        }}
+      >
+        {actions.map((a) => (
+          <div
+            key={a.id}
+            style={{
+              display: "flex",
+              gap: "10px",
+              fontSize: "11.5px",
+              lineHeight: "1.65",
+              fontFamily: "Menlo, Monaco, Consolas, monospace",
+            }}
+          >
+            <span
+              style={{
+                color: "#3a3a3a",
+                flexShrink: 0,
+                userSelect: "none",
+                minWidth: "52px",
+              }}
+            >
+              {a.time}
+            </span>
+            <span style={{ color: "#bbb" }}>{a.text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── VoiceButton ──────────────────────────────────────────────────────────────
+
+function VoiceButton({ state, onClick }) {
+  const borderColor =
+    state === "listening"
+      ? "#0070f3"
+      : state === "processing"
+      ? "#2a2a2a"
+      : state === "speaking"
+      ? "#00cc88"
+      : "#333";
+
+  const iconColor =
+    state === "listening"
+      ? "#0070f3"
+      : state === "processing"
+      ? "#444"
+      : state === "speaking"
+      ? "#00cc88"
+      : "#888";
+
+  const isIdle = state === "idle";
+  const isListening = state === "listening";
+  const isProcessing = state === "processing";
+
+  return (
+    <button
+      onClick={isIdle ? onClick : undefined}
+      style={{
+        width: "80px",
+        height: "80px",
+        borderRadius: "50%",
+        backgroundColor: "#000",
+        border: `1px solid ${borderColor}`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: isIdle ? "pointer" : "not-allowed",
+        transition: "border-color 150ms ease",
+        outline: "none",
+        flexShrink: 0,
+      }}
+      className={isListening ? "animate-pulse-opacity" : ""}
+      aria-label={`Voice — ${state}`}
+    >
+      {isProcessing ? (
+        <SpinnerIcon
+          style={{ color: iconColor, animation: "spin 1s linear infinite" }}
+        />
+      ) : (
+        <MicIcon style={{ color: iconColor }} />
+      )}
+    </button>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+function NovaAssist() {
+  const [isElectron, setIsElectron] = useState(null);
+  const [voiceState, setVoiceState] = useState("idle");
+  const [actions, setActions] = useState(INITIAL_ACTIONS);
+  const [outputText, setOutputText] = useState(
+    "> NovaAssist ready.\n> Amazon Nova 2 Sonic, Nova 2 Lite, Nova Act loaded.\n> Awaiting voice or text command."
+  );
+  const [screenshot, setScreenshot] = useState(null);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [textInput, setTextInput] = useState("");
+  const nextId = useRef(6);
+  const processingRef = useRef(false);
+  const voiceModeRef = useRef(voiceMode);
+
+  // Detect Electron environment
+  useEffect(() => {
+    setIsElectron(!!window.novaAssist);
+  }, []);
+
+  // Keep voiceModeRef in sync to avoid stale closure in runCommand
+  useEffect(() => {
+    voiceModeRef.current = voiceMode;
+  }, [voiceMode]);
+
+  const addAction = useCallback((text) => {
+    setActions((prev) => [
+      ...prev,
+      { id: nextId.current++, time: getTimestamp(), text },
+    ]);
+  }, []);
+
+  // ── Core command runner ────────────────────────────────────────────────────
+
+  const runCommand = useCallback(
+    async (command) => {
+      if (!command.trim() || processingRef.current) return;
+      processingRef.current = true;
+
+      if (!window.novaAssist) {
+        addAction("Error: backend unavailable");
+        setOutputText(
+          "> Error: Not running in Electron.\n> window.novaAssist is undefined."
+        );
+        processingRef.current = false;
+        return;
+      }
+
+      const trimmed = command.trim();
+      const short =
+        trimmed.length > 42 ? trimmed.slice(0, 42) + "…" : trimmed;
+      addAction(`Input: "${short}"`);
+      setVoiceState("processing");
+      setOutputText(
+        `> Processing: "${trimmed}"\n\nRouting to Nova Act agent...\nAnalyzing intent via Nova 2 Lite...`
+      );
+
+      try {
+        const response = await window.novaAssist.executeCommand(trimmed);
+        const plan = response?.plan || { speak: "No response from backend.", actions: [], reasoning: "" };
+        const results = response?.results || [];
+
+        if (response?.error) {
+          addAction("Backend error: " + (response.error.length > 60 ? response.error.slice(0, 60) + "…" : response.error));
+        }
+
+        if (plan.reasoning) {
+          const r = plan.reasoning;
+          addAction(r.length > 60 ? r.slice(0, 60) + "…" : r);
+        }
+        plan.actions?.forEach((a) => {
+          if (typeof a === "string") {
+            addAction(a);
+          } else if (a && typeof a === "object") {
+            addAction(`${a.type}: ${a.value || ""}`);
+          }
+        });
+
+        const stdout = (results || [])
+          .filter((r) => r.stdout)
+          .map((r) => r.stdout)
+          .join("\n");
+        setOutputText((plan.speak || "") + (stdout ? "\n\n" + stdout : ""));
+
+        const screenshotResult = (results || []).find((r) => r.screenshot);
+        if (screenshotResult?.screenshot) {
+          setScreenshot(`file://${screenshotResult.screenshot}`);
+        }
+
+        setVoiceState("speaking");
+        if (voiceModeRef.current && plan.speak) {
+          await window.novaAssist.voiceSpeak(plan.speak);
+        }
+
+        addAction("Task completed");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        addAction(`Error: ${msg.length > 60 ? msg.slice(0, 60) + "…" : msg}`);
+        setOutputText(`> Error\n\n${msg}`);
+      } finally {
+        setVoiceState("idle");
+        processingRef.current = false;
+      }
+    },
+    [addAction]
+  );
+
+  // ── Voice button handler ───────────────────────────────────────────────────
+
+  const handleVoiceClick = useCallback(async () => {
+    if (voiceState !== "idle" || processingRef.current) return;
+
+    if (!window.novaAssist) {
+      addAction("Error: backend unavailable");
+      return;
+    }
+
+    setVoiceState("listening");
+    addAction("Microphone activated — recording 6s");
+
+    try {
+      const result = await window.novaAssist.voiceListen();
+
+      if (result.error) {
+        addAction(`Voice error: ${result.error}`);
+        setVoiceState("idle");
+        return;
+      }
+
+      if (result.transcription?.trim()) {
+        const engine = result.engine ?? "Nova 2 Sonic";
+        const t = result.transcription;
+        addAction(
+          `Recognized (${engine}): "${t.length > 60 ? t.slice(0, 60) + "…" : t}"`
+        );
+        setVoiceState("idle");
+        await runCommand(result.transcription);
+      } else {
+        addAction("No speech detected");
+        setVoiceState("idle");
+      }
+    } catch (err) {
+      addAction(
+        `Voice error: ${err instanceof Error ? err.message : "unknown"}`
+      );
+      setVoiceState("idle");
+      processingRef.current = false;
+    }
+  }, [voiceState, addAction, runCommand]);
+
+  // ── Text send handler ──────────────────────────────────────────────────────
+
+  const handleSend = useCallback(async () => {
+    if (textInput.trim()) {
+      const cmd = textInput.trim();
+      setTextInput("");
+      await runCommand(cmd);
+    }
+  }, [textInput, runCommand]);
+
+  // ── Derived display values ─────────────────────────────────────────────────
+
+  const statusLabel =
+    voiceState === "idle"
+      ? "Ready"
+      : voiceState === "listening"
+      ? "Listening..."
+      : voiceState === "processing"
+      ? "Thinking..."
+      : "Speaking...";
+
+  const statusColor =
+    voiceState === "idle"
+      ? "#444"
+      : voiceState === "listening"
+      ? "#0070f3"
+      : voiceState === "processing"
+      ? "#444"
+      : "#00cc88";
+
+  const isBusy =
+    voiceState === "processing" || voiceState === "listening";
+
+  const showBanner = isElectron === false;
+
+  // ─────────────────────────────────────────────────────────────────────────
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+        width: "100vw",
+        backgroundColor: "#000",
+        overflow: "hidden",
+        fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
+        color: "#fff",
+        paddingTop: showBanner ? "28px" : 0,
+      }}
+    >
+      {/* ── Not-Electron banner ── */}
+      {showBanner && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: "28px",
+            backgroundColor: "#0a0a0a",
+            borderBottom: "1px solid #1a1a1a",
+            fontSize: "11px",
+            color: "#555",
+            display: "flex",
+            alignItems: "center",
+            padding: "0 20px",
+            gap: "8px",
+            zIndex: 100,
+            letterSpacing: "0.01em",
+          }}
+        >
+          <span style={{ color: "#ff4444", fontWeight: 600 }}>!</span>
+          Not running in Electron — backend unavailable
+        </div>
+      )}
+
+      {/* ── Three-column main ── */}
+      <div
+        style={{
+          display: "flex",
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
+        }}
+      >
+        {/* ── Sidebar ── */}
+        <aside
+          style={{
+            width: "240px",
+            flexShrink: 0,
+            borderRight: "1px solid #1a1a1a",
+            display: "flex",
+            flexDirection: "column",
+            padding: "20px 16px 16px",
+            overflow: "hidden",
+          }}
+        >
+          {/* Wordmark */}
+          <div style={{ marginBottom: "28px" }}>
+            <span
+              style={{
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "#fff",
+                letterSpacing: "-0.025em",
+              }}
+            >
+              NovaAssist
+            </span>
+          </div>
+
+          <ActionLog actions={actions} />
+
+          {/* Sidebar footer */}
+          <div
+            style={{
+              marginTop: "16px",
+              paddingTop: "14px",
+              borderTop: "1px solid #111",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "10.5px",
+                color: "#2e2e2e",
+                fontFamily: "Menlo, Monaco, Consolas, monospace",
+                lineHeight: 1.6,
+              }}
+            >
+              Nova 2 Sonic&nbsp;•&nbsp;Nova 2 Lite&nbsp;•&nbsp;Nova Act
+            </span>
+          </div>
+        </aside>
+
+        {/* ── Center ── */}
+        <main
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            borderRight: "1px solid #1a1a1a",
+          }}
+        >
+          {/* Screen — 60% */}
+          <section
+            style={{
+              flex: "0 0 60%",
+              borderBottom: "1px solid #1a1a1a",
+              padding: "16px 20px",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "11px",
+                color: "#555",
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                fontWeight: 500,
+                marginBottom: "12px",
+                display: "block",
+              }}
+            >
+              Screen
+            </span>
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                borderRadius: "8px",
+                border: screenshot
+                  ? "1px solid #1a1a1a"
+                  : "1px dashed #1c1c1c",
+                overflow: "hidden",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: screenshot ? "#030303" : "transparent",
+              }}
+            >
+              {screenshot ? (
+                <img
+                  src={screenshot}
+                  alt="Screen capture"
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "contain",
+                    display: "block",
+                  }}
+                />
+              ) : (
+                <span
+                  style={{
+                    fontSize: "12px",
+                    color: "#2a2a2a",
+                    letterSpacing: "0.01em",
+                  }}
+                >
+                  No screenshot yet
+                </span>
+              )}
+            </div>
+          </section>
+
+          {/* Output — 40% */}
+          <section
+            style={{
+              flex: "0 0 40%",
+              padding: "16px 20px",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "11px",
+                color: "#555",
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                fontWeight: 500,
+                marginBottom: "12px",
+                display: "block",
+              }}
+            >
+              Output
+            </span>
+            <div
+              className="scrollbar-thin"
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                fontFamily: "Menlo, Monaco, Consolas, monospace",
+                fontSize: "12px",
+                color: "#c4c4c4",
+                lineHeight: 1.75,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {outputText}
+            </div>
+          </section>
+        </main>
+
+        {/* ── Right Panel ── */}
+        <aside
+          style={{
+            width: "320px",
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          {/* Voice button — upper portion */}
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "14px",
+              padding: "20px",
+            }}
+          >
+            <VoiceButton state={voiceState} onClick={handleVoiceClick} />
+            <span
+              style={{
+                fontSize: "12px",
+                color: statusColor,
+                letterSpacing: "0.01em",
+                transition: "color 150ms ease",
+                fontWeight: 400,
+              }}
+            >
+              {statusLabel}
+            </span>
+          </div>
+
+          {/* Controls — bottom */}
+          <div
+            style={{
+              padding: "20px",
+              borderTop: "1px solid #1a1a1a",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            {/* Text input row */}
+            <div
+              style={{
+                display: "flex",
+                gap: "8px",
+                alignItems: "center",
+                marginBottom: "16px",
+              }}
+            >
+              <input
+                type="text"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                placeholder="Type a command..."
+                disabled={isBusy}
+                style={{
+                  flex: 1,
+                  backgroundColor: "#000",
+                  border: "1px solid #1a1a1a",
+                  borderRadius: "6px",
+                  color: "#fff",
+                  fontSize: "12.5px",
+                  padding: "7px 11px",
+                  outline: "none",
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                  transition: "border-color 150ms ease",
+                  opacity: isBusy ? 0.45 : 1,
+                  caretColor: "#0070f3",
+                }}
+                onFocus={(e) =>
+                  (e.currentTarget.style.borderColor = "#2a2a2a")
+                }
+                onBlur={(e) =>
+                  (e.currentTarget.style.borderColor = "#1a1a1a")
+                }
+              />
+              <button
+                onClick={handleSend}
+                disabled={!textInput.trim() || isBusy}
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  backgroundColor:
+                    textInput.trim() && !isBusy ? "#0070f3" : "#0a0a0a",
+                  border: `1px solid ${
+                    textInput.trim() && !isBusy ? "#0070f3" : "#1a1a1a"
+                  }`,
+                  borderRadius: "6px",
+                  color:
+                    textInput.trim() && !isBusy ? "#fff" : "#2a2a2a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor:
+                    textInput.trim() && !isBusy ? "pointer" : "default",
+                  transition: "all 150ms ease",
+                  flexShrink: 0,
+                  outline: "none",
+                }}
+              >
+                <SendIcon />
+              </button>
+            </div>
+
+            {/* Voice Mode toggle */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingTop: "14px",
+                borderTop: "1px solid #111",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "12px",
+                  color: "#555",
+                  fontWeight: 500,
+                  letterSpacing: "0.01em",
+                }}
+              >
+                Voice Mode
+              </span>
+              <ToggleSwitch
+                checked={voiceMode}
+                onChange={(v) => {
+                  setVoiceMode(v);
+                  addAction(v ? "Voice mode enabled" : "Voice mode disabled");
+                }}
+              />
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      {/* ── Bottom bar ── */}
+      <footer
+        style={{
+          height: "36px",
+          borderTop: "1px solid #1a1a1a",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 20px",
+          flexShrink: 0,
+          position: "relative",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+          <span
+            style={{
+              width: "6px",
+              height: "6px",
+              borderRadius: "50%",
+              backgroundColor:
+                isElectron === null
+                  ? "#444"
+                  : isElectron
+                  ? "#00cc88"
+                  : "#ff4444",
+              display: "inline-block",
+              transition: "background-color 300ms ease",
+            }}
+          />
+          <span
+            style={{
+              fontSize: "11px",
+              color: "#444",
+              letterSpacing: "0.01em",
+            }}
+          >
+            {isElectron === null
+              ? "Connecting..."
+              : isElectron
+              ? "Connected"
+              : "Disconnected"}
+          </span>
+        </div>
+
+        <span
+          style={{
+            fontSize: "11px",
+            color: "#333",
+            letterSpacing: "0.01em",
+            position: "absolute",
+            left: "50%",
+            transform: "translateX(-50%)",
+          }}
+        >
+          Powered by Amazon Nova
+        </span>
+
+        <span
+          style={{
+            fontSize: "11px",
+            color: "#2e2e2e",
+            letterSpacing: "0.01em",
+          }}
+        >
+          v0.1.0
+        </span>
+      </footer>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(NovaAssist));
+</script>
+</body>
+</html>
