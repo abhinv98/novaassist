@@ -66,7 +66,7 @@ class SimpleNovaSonic:
                 "temperature": 0.7
               }},
               "turnDetectionConfiguration": {{
-                "endpointingSensitivity": "HIGH"
+                "endpointingSensitivity": "LOW"
               }}
             }}
           }}
@@ -281,7 +281,7 @@ class SimpleNovaSonic:
             p.terminate()
             await self.end_audio_input()
 
-    async def capture_timed(self, duration=6):
+    async def capture_timed(self, duration=8):
         """Capture audio for a fixed duration instead of until Enter."""
         p = pyaudio.PyAudio()
         stream = p.open(format=FORMAT, channels=CHANNELS, rate=INPUT_SAMPLE_RATE, input=True, frames_per_buffer=CHUNK_SIZE)
@@ -319,14 +319,14 @@ async def run_interactive():
     return nova.transcription
 
 
-async def run_listen(duration=6):
+async def run_listen(duration=8):
     """Listen for fixed duration, return transcription."""
     nova = SimpleNovaSonic()
     await nova.start_session()
     playback_task = asyncio.create_task(nova.play_audio())
     await nova.capture_timed(duration=duration)
     # Wait for Sonic to finish responding
-    await asyncio.sleep(4)
+    await asyncio.sleep(3)
     nova.is_active = False
     playback_task.cancel()
     await asyncio.gather(playback_task, return_exceptions=True)
@@ -364,7 +364,7 @@ if __name__ == "__main__":
     mode = sys.argv[1]
 
     if mode == "listen":
-        dur = int(sys.argv[2]) if len(sys.argv) > 2 else 6
+        dur = int(sys.argv[2]) if len(sys.argv) > 2 else 8
         try:
             txt = asyncio.run(run_listen(dur))
             print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic"}))

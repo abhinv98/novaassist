@@ -362,7 +362,8 @@ function NovaAssist() {
         }
 
         setVoiceState("speaking");
-        if (voiceModeRef.current && plan.speak) {
+        const usedFallback = (results || []).some((r) => r.engine === "fallback");
+        if (voiceModeRef.current && plan.speak && usedFallback) {
           await window.novaAssist.voiceSpeak(plan.speak);
         }
 

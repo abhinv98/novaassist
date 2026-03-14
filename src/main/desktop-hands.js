@@ -161,6 +161,102 @@ function listChromeProfiles() {
     .join("\n");
 }
 
+// ─── Chrome Tab Management ──────────────────────────────────
+
+async function getChromeTabs() {
+  const script = `
+tell application "Google Chrome"
+  set tabInfo to ""
+  set windowCount to count of windows
+  repeat with w from 1 to windowCount
+    set tabCount to count of tabs of window w
+    repeat with t from 1 to tabCount
+      set tabTitle to title of tab t of window w
+      set tabURL to URL of tab t of window w
+      set tabInfo to tabInfo & tabTitle & "|||" & tabURL & "\\n"
+    end repeat
+  end repeat
+  return tabInfo
+end tell`;
+  const escaped = script.replace(/'/g, "'\\''");
+  const result = await executeCommand(`osascript -e '${escaped}'`);
+  if (!result.success || !result.stdout) return [];
+  return result.stdout
+    .split("\n")
+    .filter((l) => l.includes("|||"))
+    .map((l) => {
+      const [title, url] = l.split("|||");
+      return { title: (title || "").trim(), url: (url || "").trim() };
+    });
+}
+
+async function getActiveTabInfo() {
+  const [titleResult, urlResult, textResult] = await Promise.all([
+    executeCommand(
+      'osascript -e \'tell application "Google Chrome" to get title of active tab of front window\''
+    ),
+    executeCommand(
+      'osascript -e \'tell application "Google Chrome" to get URL of active tab of front window\''
+    ),
+    executeCommand(
+      'osascript -e \'tell application "Google Chrome" to execute active tab of front window javascript "document.body.innerText.substring(0, 2000)"\''
+    ),
+  ]);
+  return {
+    title: titleResult.stdout || "",
+    url: urlResult.stdout || "",
+    content: textResult.stdout || "",
+  };
+}
+
+async function closeTab() {
+  return executeCommand(
+    'osascript -e \'tell application "Google Chrome" to close active tab of front window\''
+  );
+}
+
+async function switchToTab(query) {
+  const tabs = await getChromeTabs();
+  const q = query.toLowerCase().trim();
+
+  const idx = parseInt(q, 10);
+  if (!isNaN(idx) && idx >= 1 && idx <= tabs.length) {
+    return executeCommand(
+      `osascript -e 'tell application "Google Chrome" to set active tab index of front window to ${idx}'`
+    );
+  }
+
+  const matchIdx = tabs.findIndex(
+    (t) =>
+      t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)
+  );
+  if (matchIdx >= 0) {
+    return executeCommand(
+      `osascript -e 'tell application "Google Chrome" to set active tab index of front window to ${matchIdx + 1}'`
+    );
+  }
+  return { success: false, error: `No tab matching "${query}" found` };
+}
+
+async function newTab(url) {
+  if (url) {
+    const script = `tell application "Google Chrome"
+activate
+if (count of windows) = 0 then
+make new window
+set URL of active tab of front window to "${url}"
+else
+make new tab at end of tabs of front window with properties {URL:"${url}"}
+end if
+end tell`;
+    const escaped = script.replace(/'/g, "'\\''");
+    return executeCommand(`osascript -e '${escaped}'`);
+  }
+  return executeCommand(
+    'osascript -e \'tell application "Google Chrome" to make new tab at end of tabs of front window\''
+  );
+}
+
 module.exports = {
   executeCommand,
   takeScreenshot,
@@ -171,4 +267,9 @@ module.exports = {
   findChromeProfile,
   openChromeWithProfile,
   listChromeProfiles,
+  getChromeTabs,
+  getActiveTabInfo,
+  closeTab,
+  switchToTab,
+  newTab,
 };

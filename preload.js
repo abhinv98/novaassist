@@ -4,4 +4,5 @@ contextBridge.exposeInMainWorld('novaAssist', {
   voiceListen: () => ipcRenderer.invoke('voice-listen'),
   voiceSpeak: (text) => ipcRenderer.invoke('voice-speak', text),
   takeScreenshot: () => ipcRenderer.invoke('take-screenshot'),
+  onOverlayUpdate: (cb) => ipcRenderer.on('overlay-update', (_e, data) => cb(data)),
 });
