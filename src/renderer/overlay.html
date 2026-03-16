@@ -74,6 +74,25 @@ html,body{
   word-break:break-word;
   padding:0 8px;
 }
+#progress-bar{
+  width:80%;height:3px;
+  background:#1a1a1a;
+  border-radius:2px;
+  overflow:hidden;
+  display:none;
+}
+#progress-fill{
+  height:100%;width:0%;
+  background:linear-gradient(90deg,#0070f3,#00cc88);
+  border-radius:2px;
+  transition:width .3s ease;
+}
+#step-label{
+  font-size:10px;
+  color:#444;
+  letter-spacing:.02em;
+  display:none;
+}
 #hint{
   position:absolute;
   bottom:10px;
@@ -96,6 +115,8 @@ html,body{
     </svg>
   </div>
   <div id="status">Listening...</div>
+  <div id="progress-bar"><div id="progress-fill"></div></div>
+  <div id="step-label"></div>
   <div id="transcript"></div>
   <div id="hint">⌘⇧Space to ask again</div>
 </div>
@@ -103,11 +124,26 @@ html,body{
   const ring = document.getElementById('mic-ring');
   const status = document.getElementById('status');
   const transcript = document.getElementById('transcript');
+  const progressBar = document.getElementById('progress-bar');
+  const progressFill = document.getElementById('progress-fill');
+  const stepLabel = document.getElementById('step-label');
 
   window.novaAssist.onOverlayUpdate((data) => {
     ring.className = data.state || 'listening';
     if (data.status) status.textContent = data.status;
     if (data.transcript !== undefined) transcript.textContent = data.transcript;
+
+    if (data.step && data.totalSteps && data.totalSteps > 1) {
+      progressBar.style.display = 'block';
+      stepLabel.style.display = 'block';
+      const pct = Math.round((data.step / data.totalSteps) * 100);
+      progressFill.style.width = pct + '%';
+      stepLabel.textContent = 'Step ' + data.step + ' of ' + data.totalSteps;
+    } else {
+      progressBar.style.display = 'none';
+      stepLabel.style.display = 'none';
+      progressFill.style.width = '0%';
+    }
   });
 </script>
 </body>

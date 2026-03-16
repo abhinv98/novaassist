@@ -1,0 +1,11 @@
+boto3
+pyaudio
+Pillow
+pvporcupine
+nova-act
+pyobjc-framework-Quartz
+pyobjc-framework-ApplicationServices
+pyobjc-framework-Cocoa
+SpeechRecognition
+aws-sdk-bedrock-runtime
+smithy-aws-core

@@ -8,7 +8,7 @@ const BLOCKED_PATTERNS = [
   /sudo\s+rm/,
   /mkfs/,
   /dd\s+if=/,
-  />\s*\/dev\//,
+  /(?<![12])>\s*\/dev\/(?!null)/,
   /chmod\s+777\s+\//,
   /:(){ :\|:& };:/,
 ];
@@ -163,7 +163,15 @@ function listChromeProfiles() {
 
 // ─── Chrome Tab Management ──────────────────────────────────
 
+async function isChromeRunning() {
+  const result = await executeCommand(
+    "osascript -e 'application \"Google Chrome\" is running'"
+  );
+  return result.success && result.stdout?.trim() === "true";
+}
+
 async function getChromeTabs() {
+  if (!(await isChromeRunning())) return [];
   const script = `
 tell application "Google Chrome"
   set tabInfo to ""
@@ -191,6 +199,7 @@ end tell`;
 }
 
 async function getActiveTabInfo() {
+  if (!(await isChromeRunning())) return { title: "", url: "", content: "" };
   const [titleResult, urlResult, textResult] = await Promise.all([
     executeCommand(
       'osascript -e \'tell application "Google Chrome" to get title of active tab of front window\''
@@ -257,12 +266,316 @@ end tell`;
   );
 }
 
+// ─── App Launcher (Spotlight-powered) ────────────────────────
+
+let appCache = null;
+let appCacheTime = 0;
+const APP_CACHE_TTL = 60000;
+
+async function getInstalledApps() {
+  if (appCache && Date.now() - appCacheTime < APP_CACHE_TTL) return appCache;
+  const result = await executeCommand(
+    'mdfind "kMDItemKind == \'Application\'" -onlyin /Applications -onlyin /System/Applications -onlyin ~/Applications'
+  );
+  if (!result.success || !result.stdout) return [];
+  appCache = result.stdout.split("\n").filter(Boolean).map((p) => ({
+    path: p,
+    name: path.basename(p, ".app"),
+  }));
+  appCacheTime = Date.now();
+  return appCache;
+}
+
+async function findAndOpenApp(query) {
+  const q = query.toLowerCase().trim();
+
+  const knownAliases = {
+    "cursor": "Cursor",
+    "code": "Visual Studio Code",
+    "vscode": "Visual Studio Code",
+    "vs code": "Visual Studio Code",
+    "chrome": "Google Chrome",
+    "safari": "Safari",
+    "terminal": "Terminal",
+    "finder": "Finder",
+    "notes": "Notes",
+    "messages": "Messages",
+    "slack": "Slack",
+    "spotify": "Spotify",
+    "discord": "Discord",
+    "figma": "Figma",
+    "notion": "Notion",
+    "iterm": "iTerm",
+    "iterm2": "iTerm",
+    "postman": "Postman",
+    "docker": "Docker",
+    "xcode": "Xcode",
+    "music": "Music",
+    "mail": "Mail",
+    "calendar": "Calendar",
+    "photos": "Photos",
+    "preview": "Preview",
+    "activity monitor": "Activity Monitor",
+    "system preferences": "System Preferences",
+    "system settings": "System Settings",
+    "whatsapp": "WhatsApp",
+    "watsapp": "WhatsApp",
+    "what's app": "WhatsApp",
+    "telegram": "Telegram",
+    "zoom": "zoom.us",
+    "teams": "Microsoft Teams",
+    "microsoft teams": "Microsoft Teams",
+  };
+
+  if (knownAliases[q]) {
+    return executeCommand(`open -a "${knownAliases[q]}"`);
+  }
+
+  const apps = await getInstalledApps();
+  const exact = apps.find((a) => a.name.toLowerCase() === q);
+  if (exact) return executeCommand(`open "${exact.path}"`);
+
+  const partial = apps.find((a) => a.name.toLowerCase().includes(q));
+  if (partial) return executeCommand(`open "${partial.path}"`);
+
+  const words = q.split(/\s+/);
+  const multi = apps.find((a) => {
+    const lower = a.name.toLowerCase();
+    return words.every((w) => lower.includes(w));
+  });
+  if (multi) return executeCommand(`open "${multi.path}"`);
+
+  return executeCommand(`open -a "${query}"`);
+}
+
+// ─── File Search (Spotlight) ─────────────────────────────────
+
+async function findFiles(query, scope) {
+  const scopeArg = scope ? `-onlyin "${scope}"` : "";
+  const result = await executeCommand(
+    `mdfind ${scopeArg} "${query}" | head -20`
+  );
+  if (!result.success || !result.stdout) {
+    return { success: true, stdout: "No files found.", results: [] };
+  }
+  const files = result.stdout.split("\n").filter(Boolean);
+  const formatted = files.map((f) => `  ${path.basename(f)}  →  ${f}`).join("\n");
+  return {
+    success: true,
+    stdout: `Found ${files.length} result(s):\n${formatted}`,
+    results: files,
+  };
+}
+
+async function findFilesByName(name) {
+  const result = await executeCommand(
+    `mdfind "kMDItemFSName == '*${name}*'cd" | head -20`
+  );
+  if (!result.success || !result.stdout) {
+    return { success: true, stdout: "No files found.", results: [] };
+  }
+  const files = result.stdout.split("\n").filter(Boolean);
+  const formatted = files.map((f) => `  ${path.basename(f)}  →  ${f}`).join("\n");
+  return {
+    success: true,
+    stdout: `Found ${files.length} result(s):\n${formatted}`,
+    results: files,
+  };
+}
+
+// ─── Apple Notes Integration ─────────────────────────────────
+
+function escapeAppleScript(str) {
+  return str.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+async function createNote(title, body) {
+  const safeTitle = escapeAppleScript(title);
+  const safeBody = escapeAppleScript(body);
+  const script = `tell application "Notes"
+activate
+tell account "iCloud"
+make new note at folder "Notes" with properties {name:"${safeTitle}", body:"<h1>${safeTitle}</h1><br>${safeBody.replace(/\n/g, "<br>")}"}
+end tell
+end tell`;
+  return osascript(script);
+}
+
+async function readNote(titleQuery) {
+  const safeQ = escapeAppleScript(titleQuery);
+  const script = `tell application "Notes"
+set matchedNotes to {}
+repeat with n in notes
+if name of n contains "${safeQ}" then
+set end of matchedNotes to {noteName:name of n, noteBody:plaintext of n}
+if (count of matchedNotes) >= 1 then exit repeat
+end if
+end repeat
+if (count of matchedNotes) = 0 then
+return "NO_MATCH"
+else
+set r to item 1 of matchedNotes
+return (noteName of r) & "|||" & (noteBody of r)
+end if
+end tell`;
+  const result = await osascript(script);
+  if (!result.success || !result.stdout || result.stdout === "NO_MATCH") {
+    return { success: false, error: `No note matching "${titleQuery}" found.` };
+  }
+  const sep = result.stdout.indexOf("|||");
+  return {
+    success: true,
+    title: sep >= 0 ? result.stdout.substring(0, sep) : titleQuery,
+    body: sep >= 0 ? result.stdout.substring(sep + 3) : result.stdout,
+    stdout: result.stdout.substring(sep >= 0 ? sep + 3 : 0),
+  };
+}
+
+async function listNotes(limit = 10) {
+  const script = `tell application "Notes"
+set output to ""
+set noteList to notes
+set maxCount to ${limit}
+if (count of noteList) < maxCount then set maxCount to (count of noteList)
+repeat with i from 1 to maxCount
+set n to item i of noteList
+set output to output & (i as text) & ". " & name of n & "\\n"
+end repeat
+return output
+end tell`;
+  const result = await osascript(script);
+  return {
+    success: result.success,
+    stdout: result.stdout || "No notes found.",
+  };
+}
+
+async function appendToNote(titleQuery, textToAppend) {
+  const safeQ = escapeAppleScript(titleQuery);
+  const safeText = escapeAppleScript(textToAppend);
+  const script = `tell application "Notes"
+repeat with n in notes
+if name of n contains "${safeQ}" then
+set body of n to (body of n) & "<br>${safeText.replace(/\n/g, "<br>")}"
+return "OK"
+end if
+end repeat
+return "NO_MATCH"
+end tell`;
+  const result = await osascript(script);
+  if (result.stdout === "NO_MATCH") {
+    return { success: false, error: `No note matching "${titleQuery}" found.` };
+  }
+  return { success: true, stdout: `Appended to note "${titleQuery}".` };
+}
+
+// ─── Cursor IDE Integration ──────────────────────────────────
+
+async function openInCursor(folderPath) {
+  const resolved = folderPath.replace(/^~/, process.env.HOME);
+  return executeCommand(`cursor "${resolved}"`);
+}
+
+async function createProjectAndOpen(name, parentDir, taskDescription) {
+  const parent = (parentDir || "~/Desktop").replace(/^~/, process.env.HOME);
+  const projectPath = path.join(parent, name);
+
+  await executeCommand(`mkdir -p "${projectPath}"`);
+
+  if (taskDescription) {
+    fs.writeFileSync(path.join(projectPath, "TASK.md"), `# ${name}\n\n${taskDescription}\n`);
+  }
+
+  const openResult = await executeCommand(`cursor "${projectPath}"`);
+  return {
+    success: true,
+    projectPath,
+    stdout: `Project created at ${projectPath} and opened in Cursor.`,
+    ...openResult,
+  };
+}
+
+// ─── Finder Integration ──────────────────────────────────────
+
+async function revealInFinder(filePath) {
+  const resolved = filePath.replace(/^~/, process.env.HOME);
+  return executeCommand(`open -R "${resolved}"`);
+}
+
+async function openInFinder(folderPath) {
+  const resolved = folderPath.replace(/^~/, process.env.HOME);
+  return executeCommand(`open "${resolved}"`);
+}
+
+// ─── Running Apps Context ────────────────────────────────────
+
+async function getRunningApps() {
+  const result = await executeCommand(
+    "osascript -e 'tell application \"System Events\" to get name of every process whose background only is false'"
+  );
+  if (!result.success || !result.stdout) return [];
+  return result.stdout.split(", ").map((s) => s.trim()).filter(Boolean);
+}
+
+// ─── Screen Agent (Computer Use) ─────────────────────────────
+
+function runScreenAgent(task, maxSteps = 10) {
+  const { spawn } = require("child_process");
+  const payload = JSON.stringify({ task, max_steps: maxSteps });
+
+  return new Promise((resolve) => {
+    const proc = spawn("/opt/anaconda3/bin/python3", [
+      path.join(__dirname, "..", "python", "screen_agent.py"),
+      payload,
+    ], {
+      env: {
+        ...process.env,
+        AWS_REGION: process.env.AWS_REGION || "us-east-1",
+      },
+      timeout: 120000,
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (d) => { stdout += d.toString(); });
+    proc.stderr.on("data", (d) => {
+      stderr += d.toString();
+      const lines = d.toString().split("\n").filter(Boolean);
+      for (const line of lines) {
+        if (line.startsWith("SCREEN_AGENT_LOG:")) {
+          console.log("🖱️  " + line.replace("SCREEN_AGENT_LOG:", ""));
+        }
+      }
+    });
+
+    proc.on("close", (code) => {
+      const resultLine = stdout.split("\n").find((l) => l.startsWith("SCREEN_AGENT_RESULT:"));
+      if (resultLine) {
+        try {
+          const result = JSON.parse(resultLine.replace("SCREEN_AGENT_RESULT:", ""));
+          resolve(result);
+        } catch (e) {
+          resolve({ success: false, error: "Failed to parse screen agent result" });
+        }
+      } else {
+        resolve({ success: false, error: stderr || `Screen agent exited with code ${code}` });
+      }
+    });
+
+    proc.on("error", (e) => {
+      resolve({ success: false, error: e.message });
+    });
+  });
+}
+
 module.exports = {
   executeCommand,
   takeScreenshot,
   openApp,
   osascript,
   isCommandSafe,
+  isChromeRunning,
   getChromeProfiles,
   findChromeProfile,
   openChromeWithProfile,
@@ -272,4 +585,17 @@ module.exports = {
   closeTab,
   switchToTab,
   newTab,
+  findAndOpenApp,
+  findFiles,
+  findFilesByName,
+  createNote,
+  readNote,
+  listNotes,
+  appendToNote,
+  openInCursor,
+  createProjectAndOpen,
+  revealInFinder,
+  openInFinder,
+  getRunningApps,
+  runScreenAgent,
 };

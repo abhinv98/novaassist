@@ -4,12 +4,18 @@ const { classifyIntent, analyzeScreenshot, generateObservation } = require('./sr
 const {
   executeCommand, takeScreenshot, openChromeWithProfile, findChromeProfile,
   getChromeTabs, getActiveTabInfo, closeTab, switchToTab, newTab,
+  findAndOpenApp, findFiles, findFilesByName,
+  createNote, readNote, listNotes, appendToNote,
+  openInCursor, createProjectAndOpen,
+  revealInFinder, openInFinder, getRunningApps,
+  runScreenAgent,
 } = require('./src/main/desktop-hands');
 const { execSync } = require('child_process');
 
 let mainWindow;
 let overlayWindow = null;
 let overlayBusy = false;
+let wakeWordProcess = null;
 
 // ─── Session State ───────────────────────────────────────────────────────────
 
@@ -37,6 +43,40 @@ async function updateSessionContext() {
 function addRecentAction(text) {
   session.recentActions.push(text);
   if (session.recentActions.length > 10) session.recentActions.shift();
+}
+
+// ─── Instant Acknowledgment ──────────────────────────────────────────────────
+
+function quickAck(text) {
+  try {
+    const escaped = text.replace(/"/g, '\\"');
+    execSync(`say -v Samantha -r 210 "${escaped}"`, { timeout: 5000 });
+  } catch (e) {
+    console.error('quickAck error:', e.message);
+  }
+}
+
+function speakAndWait(text) {
+  try {
+    let toSpeak = text;
+    if (toSpeak.length > 500) {
+      toSpeak = toSpeak.substring(0, 500) + '... and more.';
+    }
+    const escaped = toSpeak.replace(/"/g, '\\"').replace(/`/g, '').replace(/\$/g, '');
+    execSync(`say -v Samantha -r 185 "${escaped}"`, { timeout: 120000 });
+  } catch (e) {
+    console.error('speakAndWait error:', e.message);
+  }
+}
+
+// ─── Notes Manifest Parser ───────────────────────────────────────────────────
+
+function parseNoteIntoTasks(noteBody) {
+  if (!noteBody) return [];
+  return noteBody
+    .split(/\n/)
+    .map((line) => line.replace(/^[\s\-\*•\d.)\]]+/, '').trim())
+    .filter((line) => line.length > 2 && !line.startsWith('#'));
 }
 
 const voiceEnv = {
@@ -131,8 +171,8 @@ async function executeAction(action) {
     }
     case 'chrome_read': {
       await updateSessionContext();
-      const linksResult = await executeCommand('osascript -e \'tell application "Google Chrome" to execute active tab of front window javascript "Array.from(document.querySelectorAll(\\\"a\\\")).slice(0,20).map(a => a.href + \\\" | \\\" + a.textContent.trim().substring(0,50)).join(\\\"\\\\n\\\")"\'');
-      const pageContent = `Page: ${session.activeTab.title}\nURL: ${session.activeTab.url}\n\nLinks:\n${linksResult.stdout || 'none'}\n\nContent preview:\n${session.activeTab.content}`;
+      const linksResult = await executeCommand('osascript -e \'tell application "Google Chrome" to execute active tab of front window javascript "Array.from(document.querySelectorAll(\\\"a\\\")).slice(0,30).map((a,i) => (i+1) + \\\". \\\" + a.textContent.trim().substring(0,60) + \\\" -> \\\" + a.href).join(\\\"\\\\n\\\")"\'');
+      const pageContent = `Page: ${session.activeTab.title}\nURL: ${session.activeTab.url}\n\nNumbered links on page:\n${linksResult.stdout || 'none'}\n\nIMPORTANT: To click a link, use chrome_js with: window.location.href = 'THE_EXACT_URL_FROM_ABOVE'\nDo NOT use querySelector with :contains() — it does not work.\n\nContent preview:\n${session.activeTab.content}`;
       return { success: true, stdout: pageContent, description: 'Current page content' };
     }
     case 'chrome_close_tab': return closeTab();
@@ -156,9 +196,139 @@ async function executeAction(action) {
     case 'screenshot': {
       const p = action.value || '/tmp/nova_screenshot.png';
       await takeScreenshot(p);
-      const desc = await analyzeScreenshot(p);
+      const question = action._question || 'Describe what you see on this screen. Mention any visible messages, notifications, chat names, or unread indicators. Be specific and conversational.';
+      const desc = await analyzeScreenshot(p, question);
       return { success: true, description: desc, screenshot: p };
     }
+
+    // ─── App Launcher ──────────────────────────────────────────
+    case 'open_app': {
+      return findAndOpenApp(action.value);
+    }
+
+    // ─── File Search ───────────────────────────────────────────
+    case 'find_files': {
+      const parts = (action.value || '').split('|').map(s => s.trim());
+      const query = parts[0];
+      const scope = parts[1] || null;
+      return findFiles(query, scope);
+    }
+
+    // ─── Apple Notes ───────────────────────────────────────────
+    case 'notes_create': {
+      const sep = (action.value || '').indexOf('|');
+      const title = sep >= 0 ? action.value.substring(0, sep).trim() : 'Note';
+      const body = sep >= 0 ? action.value.substring(sep + 1).trim() : action.value;
+      return createNote(title, body.replace(/\\n/g, '\n'));
+    }
+    case 'notes_read': {
+      const result = await readNote(action.value || '');
+      if (result.success) {
+        return { success: true, stdout: `${result.title}:\n${result.body}`, description: result.body };
+      }
+      return result;
+    }
+    case 'notes_list': {
+      const limit = parseInt(action.value, 10) || 10;
+      return listNotes(limit);
+    }
+    case 'notes_append': {
+      const sep = (action.value || '').indexOf('|');
+      const title = sep >= 0 ? action.value.substring(0, sep).trim() : '';
+      const text = sep >= 0 ? action.value.substring(sep + 1).trim() : action.value;
+      return appendToNote(title, text.replace(/\\n/g, '\n'));
+    }
+    case 'notes_execute': {
+      const noteTitle = (action.value || '').trim();
+      let noteResult;
+      if (noteTitle) {
+        noteResult = await readNote(noteTitle);
+      } else {
+        const notesList = await listNotes(1);
+        const firstTitle = (notesList.stdout || '').replace(/^\d+\.\s*/, '').split('\n')[0].trim();
+        noteResult = firstTitle ? await readNote(firstTitle) : { success: false, error: 'No notes found.' };
+      }
+      if (!noteResult.success) {
+        return { success: false, error: noteResult.error || 'Could not read note.' };
+      }
+
+      const tasks = parseNoteIntoTasks(noteResult.body);
+      if (tasks.length === 0) {
+        return { success: true, stdout: 'Note was empty or had no actionable items.' };
+      }
+
+      const taskResults = [];
+      for (let i = 0; i < tasks.length; i++) {
+        const task = tasks[i];
+        sendOverlayUpdate({
+          state: 'thinking',
+          status: `Step ${i + 1}/${tasks.length}: ${task.length > 40 ? task.slice(0, 40) + '…' : task}`,
+          transcript: '',
+          step: i + 1,
+          totalSteps: tasks.length,
+        });
+        quickAck(`Working on step ${i + 1}: ${task.length > 30 ? task.slice(0, 30) : task}`);
+        try {
+          const plan = await classifyIntent(task, session);
+          const results = await executeActions(plan, task);
+          taskResults.push({ task, plan, results, success: true });
+          addRecentAction(`manifest[${i + 1}]: ${task}`);
+        } catch (e) {
+          taskResults.push({ task, success: false, error: e.message });
+        }
+      }
+
+      const succeeded = taskResults.filter(r => r.success).length;
+      return {
+        success: true,
+        stdout: `Executed ${succeeded}/${tasks.length} tasks from note "${noteResult.title}".`,
+        description: `Completed ${succeeded} of ${tasks.length} tasks from your notes.`,
+        manifestResults: taskResults,
+      };
+    }
+
+    // ─── Cursor IDE ────────────────────────────────────────────
+    case 'cursor_open': {
+      return openInCursor(action.value);
+    }
+    case 'cursor_project': {
+      const parts = (action.value || '').split('|').map(s => s.trim());
+      const name = parts[0] || 'new-project';
+      const parentDir = parts[1] || '~/Desktop';
+      const taskDesc = parts[2] || '';
+      return createProjectAndOpen(name, parentDir, taskDesc);
+    }
+
+    // ─── Screen Agent (Computer Use) ─────────────────────────
+    case 'screen_agent': {
+      const task = action.value || '';
+      const maxSteps = action.max_steps || 10;
+      quickAck('Working on it');
+      hideOverlay();
+      await new Promise(r => setTimeout(r, 500));
+      const appMatch = task.match(/^(?:In |Open )?([\w\s]+?)[,.:]/i);
+      if (appMatch) {
+        const appName = appMatch[1].trim();
+        await executeCommand(`osascript -e 'tell application "${appName}" to activate'`);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      const agentResult = await runScreenAgent(task, maxSteps);
+      return {
+        success: agentResult.success,
+        description: agentResult.summary || 'Screen agent finished.',
+        stdout: agentResult.summary || '',
+        screenshot: agentResult.screenshot || null,
+        steps: agentResult.steps,
+        history: agentResult.history,
+      };
+    }
+
+    // ─── Finder ────────────────────────────────────────────────
+    case 'finder_reveal': {
+      const filePath = action.value || session.lastResult || '/tmp';
+      return revealInFinder(filePath);
+    }
+
     default: return { success: true };
   }
 }
@@ -168,6 +338,19 @@ async function executeActions(plan, userInput) {
   const actions = plan.actions || [];
   for (let i = 0; i < actions.length; i++) {
     const action = actions[i];
+
+    // After opening a native app, wait for it to come to foreground before screenshot or screen agent
+    if (i > 0 && actions[i - 1].type === 'open_app' && action.type === 'screenshot') {
+      await new Promise(r => setTimeout(r, 2000));
+      action._question = `The user asked: "${userInput}". The app "${actions[i - 1].value}" was just opened. Describe what you see — focus on any messages, DMs, notifications, unread chats, or relevant content. Read out names and message previews if visible. Be specific and conversational, as if telling a friend what's on the screen.`;
+    }
+    if (i > 0 && actions[i - 1].type === 'open_app' && action.type === 'screen_agent') {
+      await new Promise(r => setTimeout(r, 2000));
+      const appToFocus = actions[i - 1].value;
+      await executeCommand(`osascript -e 'tell application "${appToFocus}" to activate'`);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
     const result = await executeAction(action);
     results.push(result);
     addRecentAction(`${action.type}: ${action.value || ''}`);
@@ -191,7 +374,7 @@ async function executeActions(plan, userInput) {
 
 // ─── Global Shortcut Voice Pipeline ──────────────────────────────────────────
 
-async function runOverlayVoicePipeline() {
+async function runOverlayVoicePipeline(listenMode = 'listen') {
   if (overlayBusy) {
     overlayBusy = false;
     hideOverlay();
@@ -208,7 +391,7 @@ async function runOverlayVoicePipeline() {
   console.log('🎙️  Overlay: listening...');
 
   try {
-    const voiceResult = await listenForVoice();
+    const voiceResult = await listenForVoice(listenMode);
 
     if (!overlayBusy) return;
 
@@ -222,25 +405,57 @@ async function runOverlayVoicePipeline() {
 
     const text = voiceResult.transcription.trim();
     console.log('📝  Overlay heard:', text);
-    sendOverlayUpdate({ state: 'thinking', status: 'Thinking...', transcript: text });
+
+    // Instant acknowledgment — user hears "On it" immediately while brain thinks
+    sendOverlayUpdate({ state: 'thinking', status: 'Got it — thinking...', transcript: text });
+    quickAck('On it');
 
     await updateSessionContext();
     session.lastCommand = text;
 
+    sendOverlayUpdate({ state: 'thinking', status: 'Planning...', transcript: text });
     const plan = await classifyIntent(text, session);
 
     if (!overlayBusy) return;
+
+    // Announce what we're about to do
+    if (plan.speak) {
+      sendOverlayUpdate({ state: 'thinking', status: plan.speak, transcript: '' });
+    }
 
     const results = await executeActions(plan, text);
 
     if (!overlayBusy) return;
 
-    // Phase 3: Observe — gather context and generate natural observation
-    sendOverlayUpdate({ state: 'thinking', status: 'Observing...', transcript: text });
-    await updateSessionContext();
+    // Phase 3: Observe — use screenshot analysis if available, otherwise generate observation
+    sendOverlayUpdate({ state: 'thinking', status: 'Observing...', transcript: '' });
 
-    const contextSummary = `Active tab: ${session.activeTab.title} — ${session.activeTab.url}\nOpen tabs: ${session.openTabs.map(t => t.title).join(', ')}\nPage content: ${session.activeTab.content.substring(0, 1000)}`;
-    const observation = await generateObservation(text, contextSummary);
+    const screenshotResult = results.find(r => r.screenshot && r.description);
+    let observation;
+
+    if (screenshotResult) {
+      // A screenshot was taken and analyzed — use that as the observation directly
+      observation = screenshotResult.description;
+    } else {
+      const chromeActionTypes = new Set(['chrome_tab', 'chrome_newtab', 'chrome_profile', 'chrome_read', 'chrome_js', 'chrome_close_tab', 'chrome_switch_tab', 'browser_action']);
+      const involvesChromeActions = (plan.actions || []).some(a => chromeActionTypes.has(a.type));
+
+      if (involvesChromeActions) {
+        await updateSessionContext();
+      }
+
+      const runningApps = await getRunningApps();
+      const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
+
+      let contextSummary;
+      if (involvesChromeActions) {
+        contextSummary = `Active tab: ${session.activeTab.title} — ${session.activeTab.url}\nOpen tabs: ${session.openTabs.map(t => t.title).join(', ')}\nRunning apps: ${runningApps.slice(0, 15).join(', ')}\nPage content: ${session.activeTab.content.substring(0, 1000)}`;
+      } else {
+        contextSummary = `Running apps: ${runningApps.slice(0, 15).join(', ')}\nNote: No Chrome actions were performed — do NOT describe Chrome state.`;
+      }
+
+      observation = await generateObservation(text, contextSummary, actionsLog);
+    }
 
     session.lastResult = observation;
     console.log('👁️  Observation:', observation);
@@ -248,14 +463,11 @@ async function runOverlayVoicePipeline() {
     const displayObs = observation.length > 120 ? observation.slice(0, 120) + '…' : observation;
     sendOverlayUpdate({ state: 'done', status: displayObs, transcript: '' });
 
-    try {
-      const escaped = observation.replace(/"/g, '\\"');
-      execSync('/opt/anaconda3/bin/python3 src/python/voice_engine.py speak "' + escaped + '"', { timeout: 30000, env: voiceEnv });
-    } catch (e) {
-      console.error('Voice speak error:', e.message);
-    }
+    // Speak the observation and WAIT for it to finish (no arbitrary timeout)
+    speakAndWait(observation);
 
-    await new Promise(r => setTimeout(r, 4000));
+    // Brief pause so the user can read the overlay after speech ends
+    await new Promise(r => setTimeout(r, 1500));
   } catch (err) {
     console.error('Overlay pipeline error:', err);
     sendOverlayUpdate({ state: 'error', status: 'Error: ' + (err.message || 'unknown'), transcript: '' });
@@ -266,13 +478,110 @@ async function runOverlayVoicePipeline() {
   }
 }
 
-function listenForVoice() {
-  try {
-    const out = execSync('/opt/anaconda3/bin/python3 src/python/voice_engine.py listen', { timeout: 90000, maxBuffer: 5*1024*1024, encoding: 'utf-8', env: voiceEnv });
-    const line = out.split('\n').find(l => l.startsWith('VOICE_RESULT:'));
-    if (line) return JSON.parse(line.replace('VOICE_RESULT:', ''));
-    return { transcription: '', error: 'No result' };
-  } catch (e) { return { transcription: '', error: e.message }; }
+function listenForVoice(mode = 'listen') {
+  const { spawn } = require('child_process');
+  const args = mode === 'listen_smart'
+    ? ['src/python/voice_engine.py', 'listen_smart', '15', '3']
+    : ['src/python/voice_engine.py', 'listen'];
+  return new Promise((resolve) => {
+    const proc = spawn('/opt/anaconda3/bin/python3', args, {
+      env: voiceEnv,
+      timeout: 90000,
+    });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.on('close', () => {
+      const line = stdout.split('\n').find(l => l.startsWith('VOICE_RESULT:'));
+      if (line) {
+        try {
+          resolve(JSON.parse(line.replace('VOICE_RESULT:', '')));
+        } catch (e) {
+          resolve({ transcription: '', error: 'Parse error' });
+        }
+      } else {
+        resolve({ transcription: '', error: 'No result' });
+      }
+    });
+    proc.on('error', (e) => {
+      resolve({ transcription: '', error: e.message });
+    });
+  });
+}
+
+// ─── Wake Word Daemon ────────────────────────────────────────────────────────
+
+function startWakeWordDaemon() {
+  const accessKey = process.env.PICOVOICE_ACCESS_KEY || '';
+  if (!accessKey) {
+    console.log('⚠️  No PICOVOICE_ACCESS_KEY set — wake word detection disabled. Set the env var and restart.');
+    return;
+  }
+
+  const { spawn } = require('child_process');
+  const keyword = process.env.WAKE_WORD || 'jarvis';
+
+  wakeWordProcess = spawn('/opt/anaconda3/bin/python3', [
+    'src/python/wake_word.py',
+    '--access-key', accessKey,
+    '--keyword', keyword,
+  ], {
+    env: { ...process.env },
+  });
+
+  let stderrBuf = '';
+  wakeWordProcess.stderr.on('data', (d) => {
+    stderrBuf += d.toString();
+    console.log('🗣️  Wake word stderr:', d.toString().trim());
+  });
+
+  wakeWordProcess.stdout.on('data', (data) => {
+    const lines = data.toString().split('\n').filter(Boolean);
+    for (const line of lines) {
+      if (line === 'WAKE_WORD_DETECTED') {
+        console.log('🗣️  Wake word detected! Triggering voice pipeline...');
+        handleWakeWordDetection();
+      } else if (line.startsWith('WAKE_WORD_READY:')) {
+        console.log('🗣️  ' + line.replace('WAKE_WORD_READY:', ''));
+      } else if (line.startsWith('WAKE_WORD_ERROR:')) {
+        console.error('🗣️  Wake word error:', line.replace('WAKE_WORD_ERROR:', ''));
+      }
+    }
+  });
+
+  wakeWordProcess.on('close', (code) => {
+    console.log(`🗣️  Wake word daemon exited with code ${code}`);
+    wakeWordProcess = null;
+  });
+
+  wakeWordProcess.on('error', (err) => {
+    console.error('🗣️  Wake word daemon spawn error:', err.message);
+    wakeWordProcess = null;
+  });
+}
+
+async function handleWakeWordDetection() {
+  if (overlayBusy) return;
+
+  quickAck("Hey, what do you need?");
+
+  await runOverlayVoicePipeline('listen_smart');
+
+  resumeWakeWord();
+}
+
+function resumeWakeWord() {
+  if (wakeWordProcess && !wakeWordProcess.killed) {
+    wakeWordProcess.stdin.write('RESUME\n');
+  }
+}
+
+function stopWakeWordDaemon() {
+  if (wakeWordProcess && !wakeWordProcess.killed) {
+    wakeWordProcess.kill();
+    wakeWordProcess = null;
+  }
 }
 
 // ─── App Lifecycle ───────────────────────────────────────────────────────────
@@ -286,10 +595,13 @@ app.whenReady().then(() => {
   });
 
   console.log('⌨️  Global shortcut registered: Cmd+Shift+Space');
+
+  startWakeWordDaemon();
 });
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  stopWakeWordDaemon();
 });
 
 app.on('window-all-closed', () => app.quit());
@@ -308,10 +620,20 @@ ipcMain.handle('execute-command', async (event, userInput) => {
     const plan = await classifyIntent(userInput, session);
     const results = await executeActions(plan, userInput);
 
-    // Phase 3: Observe
-    await updateSessionContext();
-    const contextSummary = `Active tab: ${session.activeTab.title} — ${session.activeTab.url}\nOpen tabs: ${session.openTabs.map(t => t.title).join(', ')}\nPage content: ${session.activeTab.content.substring(0, 1000)}`;
-    const observation = await generateObservation(userInput, contextSummary);
+    const chromeTypes = new Set(['chrome_tab', 'chrome_newtab', 'chrome_profile', 'chrome_read', 'chrome_js', 'chrome_close_tab', 'chrome_switch_tab', 'browser_action']);
+    const touchesChrome = (plan.actions || []).some(a => chromeTypes.has(a.type));
+    if (touchesChrome) {
+      await updateSessionContext();
+    }
+    const runningApps = await getRunningApps();
+    const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
+    let contextSummary;
+    if (touchesChrome) {
+      contextSummary = `Active tab: ${session.activeTab.title} — ${session.activeTab.url}\nOpen tabs: ${session.openTabs.map(t => t.title).join(', ')}\nRunning apps: ${runningApps.slice(0, 15).join(', ')}\nPage content: ${session.activeTab.content.substring(0, 1000)}`;
+    } else {
+      contextSummary = `Running apps: ${runningApps.slice(0, 15).join(', ')}\nNote: No Chrome actions were performed — do NOT describe Chrome state.`;
+    }
+    const observation = await generateObservation(userInput, contextSummary, actionsLog);
     session.lastResult = observation;
 
     return { plan, results, observation, session: { openTabs: session.openTabs, activeTab: { title: session.activeTab.title, url: session.activeTab.url } } };
@@ -331,8 +653,7 @@ ipcMain.handle('voice-listen', async () => {
 
 ipcMain.handle('voice-speak', async (event, text) => {
   try {
-    const escaped = text.replace(/"/g, '\\"');
-    execSync('/opt/anaconda3/bin/python3 src/python/voice_engine.py speak "' + escaped + '"', { timeout: 30000, env: voiceEnv });
+    speakAndWait(text);
     return { success: true };
   } catch (e) { return { success: false, error: e.message }; }
 });

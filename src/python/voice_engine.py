@@ -300,6 +300,46 @@ class SimpleNovaSonic:
         print("VOICE_LOG:✅ Done", file=sys.stderr)
         await self.end_audio_input()
 
+    async def capture_smart(self, max_duration=15, silence_threshold=500, silence_timeout=3.0):
+        """Capture audio with silence detection — stops early when the user stops speaking."""
+        import struct as _struct
+        p = pyaudio.PyAudio()
+        stream = p.open(format=FORMAT, channels=CHANNELS, rate=INPUT_SAMPLE_RATE, input=True, frames_per_buffer=CHUNK_SIZE)
+        print("VOICE_LOG:🎙️ Listening (smart mode)...", file=sys.stderr)
+        await self.start_audio_input()
+
+        total_chunks = int(INPUT_SAMPLE_RATE / CHUNK_SIZE * max_duration)
+        speech_detected = False
+        silent_chunks = 0
+        chunks_per_second = INPUT_SAMPLE_RATE / CHUNK_SIZE
+        silence_chunk_limit = int(silence_timeout * chunks_per_second)
+
+        for i in range(total_chunks):
+            if not self.is_active:
+                break
+            audio_data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            await self.send_audio_chunk(audio_data)
+
+            samples = _struct.unpack(f"<{CHUNK_SIZE}h", audio_data)
+            rms = (sum(s * s for s in samples) / CHUNK_SIZE) ** 0.5
+
+            if rms > silence_threshold:
+                speech_detected = True
+                silent_chunks = 0
+            elif speech_detected:
+                silent_chunks += 1
+                if silent_chunks >= silence_chunk_limit:
+                    print(f"VOICE_LOG:🔇 Silence detected after speech ({silence_timeout}s), stopping capture", file=sys.stderr)
+                    break
+
+            await asyncio.sleep(0.01)
+
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        print("VOICE_LOG:✅ Done (smart)", file=sys.stderr)
+        await self.end_audio_input()
+
 
 async def run_interactive():
     """Interactive mode — continuous conversation, press Enter to stop."""
@@ -326,6 +366,25 @@ async def run_listen(duration=8):
     playback_task = asyncio.create_task(nova.play_audio())
     await nova.capture_timed(duration=duration)
     # Wait for Sonic to finish responding
+    await asyncio.sleep(3)
+    nova.is_active = False
+    playback_task.cancel()
+    await asyncio.gather(playback_task, return_exceptions=True)
+    if nova.response and not nova.response.done():
+        nova.response.cancel()
+    try:
+        await nova.end_session()
+    except:
+        pass
+    return nova.transcription
+
+
+async def run_listen_smart(max_duration=15, silence_timeout=3.0):
+    """Listen with silence detection — exits early when the user stops speaking."""
+    nova = SimpleNovaSonic()
+    await nova.start_session()
+    playback_task = asyncio.create_task(nova.play_audio())
+    await nova.capture_smart(max_duration=max_duration, silence_timeout=silence_timeout)
     await asyncio.sleep(3)
     nova.is_active = False
     playback_task.cancel()
@@ -377,6 +436,17 @@ if __name__ == "__main__":
         text = sys.argv[2] if len(sys.argv) > 2 else "Hello, I am Nova Assist."
         speak_text(text)
         print("VOICE_RESULT:" + json.dumps({"success": True, "engine": "macos-say"}))
+
+    elif mode == "listen_smart":
+        max_dur = int(sys.argv[2]) if len(sys.argv) > 2 else 15
+        silence_sec = float(sys.argv[3]) if len(sys.argv) > 3 else 3.0
+        try:
+            txt = asyncio.run(run_listen_smart(max_dur, silence_sec))
+            print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic-smart"}))
+        except Exception as e:
+            print(f"VOICE_LOG:Sonic smart failed: {e}, using fallback", file=sys.stderr)
+            txt = fallback_listen(max_dur)
+            print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "fallback"}))
 
     elif mode == "interactive":
         print("Nova 2 Sonic Interactive Mode. Press Enter to stop.")
