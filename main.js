@@ -742,6 +742,17 @@ function stopWakeWordDaemon() {
 // ─── App Lifecycle ───────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
+  // Reset stale Accessibility TCC entry on first launch so reinstalls get a clean grant
+  if (!isSetupComplete()) {
+    try {
+      const { execSync } = require('child_process');
+      execSync('tccutil reset Accessibility com.novaassist.app', { timeout: 5000 });
+      console.log('TCC: reset Accessibility permission for clean install');
+    } catch (e) {
+      console.log('TCC: reset skipped —', e.message);
+    }
+  }
+
   applyConfigToEnv();
   loadMemories();
 
@@ -874,11 +885,46 @@ ipcMain.handle('verify-aws', async (event, credentials) => {
   }
 });
 
+ipcMain.handle('verify-picovoice', async (event, accessKey) => {
+  const { spawn } = require('child_process');
+  return new Promise((resolve) => {
+    const pythonPath = getPythonPath();
+    const proc = spawn(pythonPath, ['-c', `
+import pvporcupine
+handle = pvporcupine.create(access_key="${accessKey.replace(/"/g, '\\"')}", keywords=["jarvis"])
+handle.delete()
+print("OK")
+`], { env: { ...process.env }, timeout: 15000 });
+    let out = '';
+    proc.stdout.on('data', (d) => { out += d.toString(); });
+    proc.stderr.on('data', (d) => { out += d.toString(); });
+    proc.on('close', (code) => {
+      if (code === 0 && out.includes('OK')) {
+        resolve({ success: true });
+      } else {
+        let error = out.trim().split('\n').pop() || 'Verification failed';
+        if (error.includes('pvporcupine')) error = 'pvporcupine not installed. Install dependencies first.';
+        else if (error.includes('invalid access key') || error.includes('AccessKey')) error = 'Invalid access key. Check your key at console.picovoice.ai';
+        resolve({ success: false, error });
+      }
+    });
+    proc.on('error', () => {
+      resolve({ success: false, error: 'Python not found. Install dependencies first.' });
+    });
+  });
+});
+
 ipcMain.handle('install-deps', async () => {
   const { spawn } = require('child_process');
+  function getRequirementsPath() {
+    if (app.isPackaged) {
+      return path.join(process.resourcesPath, 'requirements.txt');
+    }
+    return path.join(__dirname, 'requirements.txt');
+  }
   function runPipInstall(args) {
     return new Promise((resolve) => {
-      const reqPath = path.join(__dirname, 'requirements.txt');
+      const reqPath = getRequirementsPath();
       const proc = spawn('pip3', ['install', '-r', reqPath, ...args], {
         env: { ...process.env },
         timeout: 300000,

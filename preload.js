@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('novaAssist', {
   checkAccessibility: () => ipcRenderer.invoke('check-accessibility'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   verifyAws: (creds) => ipcRenderer.invoke('verify-aws', creds),
+  verifyPicovoice: (key) => ipcRenderer.invoke('verify-picovoice', key),
   installDeps: () => ipcRenderer.invoke('install-deps'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   completeSetup: () => ipcRenderer.invoke('complete-setup'),

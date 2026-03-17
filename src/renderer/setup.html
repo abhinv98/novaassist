@@ -231,9 +231,36 @@ function AwsStep({ config, setConfig, onNext }) {
 
 // Step 4: Picovoice
 function PicovoiceStep({ config, setConfig, onNext }) {
+  const [verifying, setVerifying] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [error, setError] = useState('');
+
   const update = (val) => {
     setConfig(prev => ({ ...prev, picovoice: { ...prev.picovoice, accessKey: val } }));
+    setStatus(null);
   };
+
+  const verify = useCallback(async () => {
+    const key = config.picovoice?.accessKey;
+    if (!key) return;
+    setVerifying(true);
+    setStatus(null);
+    setError('');
+    try {
+      const r = await window.novaAssist.verifyPicovoice(key);
+      if (r.success) {
+        setStatus('ok');
+        await window.novaAssist.saveConfig(config);
+      } else {
+        setStatus('fail');
+        setError(r.error || 'Verification failed');
+      }
+    } catch (e) {
+      setStatus('fail');
+      setError(e.message || 'Verification failed');
+    }
+    setVerifying(false);
+  }, [config]);
 
   return (
     <div style={{animation:'fadeIn 400ms ease'}}>
@@ -249,8 +276,14 @@ function PicovoiceStep({ config, setConfig, onNext }) {
         </p>
       </div>
       <InputField label="Picovoice Access Key" value={config.picovoice?.accessKey||''} onChange={update} placeholder="Your Picovoice key" />
-      <div style={{display:'flex',gap:'12px',marginBottom:'20px'}}>
+      <div style={{display:'flex',gap:'12px',alignItems:'center',marginBottom:'20px'}}>
         <Btn onClick={()=>window.novaAssist.openExternal('https://console.picovoice.ai/')}>Open Picovoice Console</Btn>
+        <Btn onClick={verify} disabled={verifying || !config.picovoice?.accessKey}>
+          {verifying ? 'Verifying...' : 'Verify Key'}
+        </Btn>
+        {verifying && <SpinIcon/>}
+        {status === 'ok' && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Key is valid</span>}
+        {status === 'fail' && <span style={{fontSize:'12px',color:'#ff4444'}}>{error.length > 80 ? error.slice(0,80)+'...' : error}</span>}
       </div>
       <p style={{fontSize:'12px',color:'#555',marginBottom:'20px'}}>
         This step is optional. Without it, you can still use Cmd+Shift+Space to activate voice.
