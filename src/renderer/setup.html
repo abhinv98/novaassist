@@ -391,7 +391,7 @@ function DoneStep() {
 function SetupWizard() {
   const [step, setStep] = useState(0);
   const [config, setConfig] = useState({ aws: { region: 'us-east-1' }, picovoice: {} });
-  const totalSteps = 6;
+  const totalSteps = 7;
 
   useEffect(() => {
     (async () => {
