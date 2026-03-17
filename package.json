@@ -1,6 +1,6 @@
 {
   "name": "nova-assist",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Voice-first AI desktop agent for macOS",
   "main": "main.js",
   "scripts": {

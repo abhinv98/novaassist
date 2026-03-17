@@ -915,18 +915,41 @@ print("OK")
 });
 
 ipcMain.handle('install-deps', async () => {
-  const { spawn } = require('child_process');
+  const { spawn, execSync } = require('child_process');
   function getRequirementsPath() {
     if (app.isPackaged) {
       return path.join(process.resourcesPath, 'requirements.txt');
     }
     return path.join(__dirname, 'requirements.txt');
   }
+  function findBestPip() {
+    const candidates = [
+      '/opt/homebrew/bin/pip3',
+      '/usr/local/bin/pip3',
+      '/opt/homebrew/bin/python3 -m pip',
+      '/usr/local/bin/python3 -m pip',
+    ];
+    for (const c of candidates) {
+      try {
+        const parts = c.split(' ');
+        const ver = execSync(`${parts[0]} ${parts.length > 1 ? parts.slice(1).join(' ') + ' ' : ''}--version 2>/dev/null`, { timeout: 5000 }).toString();
+        const match = ver.match(/python\s+(\d+)\.(\d+)/i);
+        if (match && (parseInt(match[1]) > 3 || (parseInt(match[1]) === 3 && parseInt(match[2]) >= 10))) {
+          console.log(`install-deps: using ${c} (Python ${match[1]}.${match[2]})`);
+          return c.split(' ');
+        }
+      } catch {}
+    }
+    return ['pip3'];
+  }
+  const pipCmd = findBestPip();
   function runPipInstall(args) {
     return new Promise((resolve) => {
       const reqPath = getRequirementsPath();
-      const proc = spawn('pip3', ['install', '-r', reqPath, ...args], {
-        env: { ...process.env },
+      const cmd = pipCmd[0];
+      const cmdArgs = [...pipCmd.slice(1), 'install', '-r', reqPath, ...args];
+      const proc = spawn(cmd, cmdArgs, {
+        env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || '') },
         timeout: 300000,
       });
       let output = '';

@@ -2,6 +2,7 @@ boto3
 pyaudio
 Pillow
 pvporcupine
+nova-act; python_version >= "3.10"
 pyobjc-framework-Quartz
 pyobjc-framework-ApplicationServices
 pyobjc-framework-Cocoa
