@@ -756,6 +756,11 @@ app.whenReady().then(() => {
   applyConfigToEnv();
   loadMemories();
 
+  // Request microphone permission from main process on every launch
+  systemPreferences.askForMediaAccess('microphone').then(granted => {
+    console.log('Microphone permission:', granted ? 'granted' : 'denied');
+  }).catch(() => {});
+
   if (!isSetupComplete()) {
     createWindow();
     mainWindow.loadFile('src/renderer/setup.html');
@@ -794,20 +799,29 @@ ipcMain.handle('execute-command', async (event, userInput) => {
     const plan = await classifyIntent(userInput, session);
     const results = await executeActions(plan, userInput);
 
-    const chromeTypes = new Set(['chrome_tab', 'chrome_newtab', 'chrome_profile', 'chrome_read', 'chrome_js', 'chrome_close_tab', 'chrome_switch_tab', 'browser_action']);
-    const touchesChrome = (plan.actions || []).some(a => chromeTypes.has(a.type));
-    if (touchesChrome) {
-      await updateSessionContext();
-    }
-    const runningApps = await getRunningApps();
-    const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
-    let contextSummary;
-    if (touchesChrome) {
-      contextSummary = `Active tab: ${session.activeTab.title} — ${session.activeTab.url}\nOpen tabs: ${session.openTabs.map(t => t.title).join(', ')}\nRunning apps: ${runningApps.slice(0, 15).join(', ')}\nPage content: ${session.activeTab.content.substring(0, 1000)}`;
+    // Check if any action already produced a description (describe_screen, read_document, recall_memory, check_notifications)
+    const selfDescribedResult = results.find(r => r.description);
+    let observation;
+
+    if (selfDescribedResult) {
+      observation = selfDescribedResult.description;
+      speakAndWait(observation);
     } else {
-      contextSummary = `Running apps: ${runningApps.slice(0, 15).join(', ')}\nNote: No Chrome actions were performed — do NOT describe Chrome state.`;
+      const chromeTypes = new Set(['chrome_tab', 'chrome_newtab', 'chrome_profile', 'chrome_read', 'chrome_js', 'chrome_close_tab', 'chrome_switch_tab', 'browser_action']);
+      const touchesChrome = (plan.actions || []).some(a => chromeTypes.has(a.type));
+      if (touchesChrome) {
+        await updateSessionContext();
+      }
+      const runningApps = await getRunningApps();
+      const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
+      let contextSummary;
+      if (touchesChrome) {
+        contextSummary = `Active tab: ${session.activeTab.title} — ${session.activeTab.url}\nOpen tabs: ${session.openTabs.map(t => t.title).join(', ')}\nRunning apps: ${runningApps.slice(0, 15).join(', ')}\nPage content: ${session.activeTab.content.substring(0, 1000)}`;
+      } else {
+        contextSummary = `Running apps: ${runningApps.slice(0, 15).join(', ')}\nNote: No Chrome actions were performed — do NOT describe Chrome state.`;
+      }
+      observation = await generateObservation(userInput, contextSummary, actionsLog);
     }
-    const observation = await generateObservation(userInput, contextSummary, actionsLog);
     session.lastResult = observation;
 
     const primaryAction = (plan.actions || [])[0]?.type || 'unknown';
@@ -847,6 +861,26 @@ ipcMain.handle('check-accessibility', () => {
     return systemPreferences.isTrustedAccessibilityClient(true);
   } catch (e) {
     return false;
+  }
+});
+
+ipcMain.handle('check-all-permissions', () => {
+  try {
+    const mic = systemPreferences.getMediaAccessStatus('microphone');
+    const screen = systemPreferences.getMediaAccessStatus('screen');
+    return { microphone: mic, screen: screen };
+  } catch (e) {
+    return { microphone: 'not-determined', screen: 'not-determined' };
+  }
+});
+
+ipcMain.handle('request-screen-recording', async () => {
+  try {
+    const { desktopCapturer } = require('electron');
+    await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } });
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
   }
 });
 

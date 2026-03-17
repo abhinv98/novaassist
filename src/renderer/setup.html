@@ -101,70 +101,105 @@ function WelcomeStep({ onNext }) {
   );
 }
 
-// Step 1: Accessibility
-function AccessibilityStep({ onNext }) {
-  const [checked, setChecked] = useState(null);
+// Step 1: All Permissions
+function PermissionsStep({ onNext }) {
+  const [accessibility, setAccessibility] = useState(null);
+  const [microphone, setMicrophone] = useState(null);
+  const [screenRec, setScreenRec] = useState(null);
 
-  const check = useCallback(async () => {
-    const r = await window.novaAssist.checkAccessibility();
-    setChecked(r);
+  const checkAll = useCallback(async () => {
+    const ax = await window.novaAssist.checkAccessibility();
+    setAccessibility(ax);
+    const perms = await window.novaAssist.checkAllPermissions();
+    setMicrophone(perms.microphone);
+    setScreenRec(perms.screen);
   }, []);
 
-  useEffect(() => { check(); }, [check]);
+  useEffect(() => { checkAll(); }, [checkAll]);
 
-  return (
-    <div style={{animation:'fadeIn 400ms ease'}}>
-      <h2 style={{fontSize:'20px',fontWeight:600,marginBottom:'8px'}}>Accessibility Permission</h2>
-      <p style={{fontSize:'14px',color:'#999',lineHeight:1.7,marginBottom:'20px'}}>
-        NovaAssist needs Accessibility access to detect UI elements on your screen and control mouse/keyboard.
-      </p>
-      <div style={{backgroundColor:'#0a0a0a',border:'1px solid #1a1a1a',borderRadius:'10px',padding:'20px',marginBottom:'20px'}}>
-        <p style={{fontSize:'13px',color:'#bbb',lineHeight:1.8}}>
-          1. Click "Open System Settings" below<br/>
-          2. Go to Privacy and Security, then Accessibility<br/>
-          3. Find NovaAssist and toggle it ON<br/>
-          4. If NovaAssist is not listed, click the + button and add it
-        </p>
-      </div>
-      <div style={{display:'flex',gap:'12px',alignItems:'center',marginBottom:'20px'}}>
-        <Btn onClick={()=>window.novaAssist.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')}>
-          Open System Settings
-        </Btn>
-        <Btn onClick={check} small>Check Again</Btn>
-        {checked === true && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Granted</span>}
-        {checked === false && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#ff9900'}}>Not yet granted</span>}
-      </div>
-      <Btn primary onClick={onNext}>Next</Btn>
-    </div>
-  );
-}
-
-// Step 2: Microphone
-function MicrophoneStep({ onNext }) {
-  const [status, setStatus] = useState(null);
-
-  const test = useCallback(async () => {
+  const requestMic = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(t => t.stop());
-      setStatus('granted');
+      setMicrophone('granted');
     } catch (e) {
-      setStatus('denied');
+      setMicrophone('denied');
     }
   }, []);
 
+  const requestScreen = useCallback(async () => {
+    await window.novaAssist.requestScreenRecording();
+    setTimeout(checkAll, 2000);
+  }, [checkAll]);
+
+  const allGranted = accessibility === true && microphone === 'granted' && screenRec === 'granted';
+
+  function PermRow({ label, description, status, onRequest, onOpen, openLabel }) {
+    const granted = status === true || status === 'granted';
+    return (
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'14px 16px',backgroundColor:'#0a0a0a',border:'1px solid #1a1a1a',borderRadius:'10px',marginBottom:'10px'}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:'14px',fontWeight:500,marginBottom:'2px'}}>{label}</div>
+          <div style={{fontSize:'12px',color:'#666'}}>{description}</div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:'10px',marginLeft:'16px'}}>
+          {granted ? (
+            <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Granted</span>
+          ) : (
+            <>
+              {onRequest && <Btn onClick={onRequest} small>Grant</Btn>}
+              {onOpen && <Btn onClick={onOpen} small>{openLabel || 'Open Settings'}</Btn>}
+              {status === 'denied' && <span style={{fontSize:'12px',color:'#ff4444'}}>Denied</span>}
+              {status === null && <span style={{fontSize:'12px',color:'#888'}}>Not checked</span>}
+              {status === false && <span style={{fontSize:'12px',color:'#ff9900'}}>Not granted</span>}
+              {status === 'not-determined' && <span style={{fontSize:'12px',color:'#ff9900'}}>Not yet</span>}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{animation:'fadeIn 400ms ease'}}>
-      <h2 style={{fontSize:'20px',fontWeight:600,marginBottom:'8px'}}>Microphone Permission</h2>
+      <h2 style={{fontSize:'20px',fontWeight:600,marginBottom:'8px'}}>Permissions</h2>
       <p style={{fontSize:'14px',color:'#999',lineHeight:1.7,marginBottom:'20px'}}>
-        NovaAssist needs microphone access to hear your voice commands. macOS will prompt you when you click "Test Microphone".
+        NovaAssist needs three macOS permissions to work. Grant each one below.
       </p>
-      <div style={{display:'flex',gap:'12px',alignItems:'center',marginBottom:'20px'}}>
-        <Btn onClick={test}>Test Microphone</Btn>
-        {status === 'granted' && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Microphone working</span>}
-        {status === 'denied' && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#ff4444'}}><XIcon/> Permission denied</span>}
+
+      <PermRow
+        label="Accessibility"
+        description="Detect UI elements and control mouse/keyboard"
+        status={accessibility}
+        onOpen={()=>window.novaAssist.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')}
+      />
+      <PermRow
+        label="Microphone"
+        description="Hear your voice commands"
+        status={microphone}
+        onRequest={requestMic}
+      />
+      <PermRow
+        label="Screen Recording"
+        description="Capture screenshots for AI screen analysis"
+        status={screenRec}
+        onRequest={requestScreen}
+        onOpen={()=>window.novaAssist.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')}
+      />
+
+      <div style={{display:'flex',gap:'12px',alignItems:'center',marginTop:'20px'}}>
+        <Btn onClick={checkAll} small>Re-check All</Btn>
+        {allGranted && <span style={{fontSize:'13px',color:'#00cc88'}}>All permissions granted</span>}
       </div>
-      <Btn primary onClick={onNext}>Next</Btn>
+
+      <div style={{marginTop:'20px'}}>
+        <Btn primary onClick={onNext}>{allGranted ? 'Next' : 'Next (some permissions missing)'}</Btn>
+      </div>
+      {!allGranted && (
+        <p style={{fontSize:'11px',color:'#555',marginTop:'8px'}}>
+          You can continue without all permissions, but some features may not work.
+        </p>
+      )}
     </div>
   );
 }
@@ -391,7 +426,7 @@ function DoneStep() {
 function SetupWizard() {
   const [step, setStep] = useState(0);
   const [config, setConfig] = useState({ aws: { region: 'us-east-1' }, picovoice: {} });
-  const totalSteps = 7;
+  const totalSteps = 6;
 
   useEffect(() => {
     (async () => {
@@ -413,12 +448,11 @@ function SetupWizard() {
     }}>
       {step > 0 && step < totalSteps - 1 && <StepIndicator current={step-1} total={totalSteps-2}/>}
       {step === 0 && <WelcomeStep onNext={next}/>}
-      {step === 1 && <AccessibilityStep onNext={next}/>}
-      {step === 2 && <MicrophoneStep onNext={next}/>}
-      {step === 3 && <AwsStep config={config} setConfig={setConfig} onNext={next}/>}
-      {step === 4 && <PicovoiceStep config={config} setConfig={setConfig} onNext={next}/>}
-      {step === 5 && <DepsStep onNext={next}/>}
-      {step === 6 && <DoneStep/>}
+      {step === 1 && <PermissionsStep onNext={next}/>}
+      {step === 2 && <AwsStep config={config} setConfig={setConfig} onNext={next}/>}
+      {step === 3 && <PicovoiceStep config={config} setConfig={setConfig} onNext={next}/>}
+      {step === 4 && <DepsStep onNext={next}/>}
+      {step === 5 && <DoneStep/>}
       <div style={{position:'fixed',bottom:'20px',left:'50%',transform:'translateX(-50%)',fontSize:'11px',color:'#222'}}>
         Powered by Amazon Nova
       </div>

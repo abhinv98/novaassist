@@ -1,6 +1,6 @@
 {
   "name": "nova-assist",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Voice-first AI desktop agent for macOS",
   "main": "main.js",
   "scripts": {
@@ -25,7 +25,14 @@
       ],
       "icon": "build/icon.icns",
       "hardenedRuntime": false,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "NovaAssist needs microphone access to hear your voice commands.",
+        "NSAccessibilityUsageDescription": "NovaAssist needs Accessibility access to detect UI elements and control mouse/keyboard.",
+        "NSScreenCaptureUsageDescription": "NovaAssist needs Screen Recording access to capture screenshots for AI screen analysis."
+      }
     },
     "dmg": {
       "title": "NovaAssist",
