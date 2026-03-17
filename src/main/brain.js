@@ -288,7 +288,27 @@ async function classifyIntent(userMessage, sessionContext = null) {
     accept: "application/json",
   });
 
-  const response = await client.send(command);
+  let response;
+  try {
+    response = await client.send(command);
+  } catch (e) {
+    console.error("classifyIntent Bedrock error:", e.name, e.message);
+    if (e.name === "AccessDeniedException" || e.message?.includes("Invalid API Key")) {
+      return {
+        task_type: "QUERY",
+        reasoning: "Bedrock access denied",
+        actions: [],
+        speak: "I can't reach Amazon Bedrock. Please enable model access in your AWS Bedrock console, then restart the app.",
+      };
+    }
+    return {
+      task_type: "QUERY",
+      reasoning: "Bedrock call failed: " + e.message,
+      actions: [],
+      speak: "Sorry, I had trouble connecting to the AI service. Please check your AWS credentials.",
+    };
+  }
+
   const responseBody = JSON.parse(new TextDecoder().decode(response.body));
 
   const text = responseBody.output?.message?.content?.[0]?.text
@@ -504,4 +524,29 @@ async function summarizeDocument(screenshotPaths, question = "") {
   }
 }
 
-module.exports = { classifyIntent, analyzeScreenshot, generateObservation, describeScreen, summarizeDocument };
+async function validateBedrockAccess() {
+  const body = JSON.stringify({
+    messages: [{ role: "user", content: [{ text: "Say OK" }] }],
+    inferenceConfig: { maxTokens: 5 },
+  });
+  try {
+    await client.send(new InvokeModelCommand({
+      modelId: "us.amazon.nova-2-lite-v1:0",
+      body,
+      contentType: "application/json",
+      accept: "application/json",
+    }));
+    return { ok: true };
+  } catch (e) {
+    console.error("Bedrock validation failed:", e.name, e.message);
+    if (e.message?.includes("Invalid API Key") || e.name === "AccessDeniedException") {
+      return { ok: false, error: "Model access not enabled. Go to AWS Bedrock console → Model access → Enable Amazon Nova models." };
+    }
+    if (e.name === "ResourceNotFoundException" || e.message?.includes("not found")) {
+      return { ok: false, error: "Model not available in this region. Try changing your AWS region to us-east-1." };
+    }
+    return { ok: false, error: e.message };
+  }
+}
+
+module.exports = { classifyIntent, analyzeScreenshot, generateObservation, describeScreen, summarizeDocument, validateBedrockAccess };

@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, globalShortcut, screen, systemPreferences, 
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { classifyIntent, analyzeScreenshot, generateObservation, describeScreen, summarizeDocument } = require('./src/main/brain');
+const { classifyIntent, analyzeScreenshot, generateObservation, describeScreen, summarizeDocument, validateBedrockAccess } = require('./src/main/brain');
 const {
   executeCommand, takeScreenshot, openChromeWithProfile, findChromeProfile,
   getChromeTabs, getActiveTabInfo, closeTab, switchToTab, newTab,
@@ -785,6 +785,27 @@ app.whenReady().then(() => {
     console.log('⌨️  Global shortcut registered: Cmd+Shift+Space');
 
     startWakeWordDaemon();
+
+    validateBedrockAccess().then(result => {
+      if (!result.ok) {
+        console.error('⚠️  Bedrock validation failed:', result.error);
+        const { dialog } = require('electron');
+        dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: 'Bedrock Access Issue',
+          message: 'Amazon Bedrock is not accessible with your current credentials.',
+          detail: result.error + '\n\nThe app will still run but AI features (screen description, intent classification) will not work until this is resolved.',
+          buttons: ['Open Bedrock Console', 'OK'],
+          defaultId: 0,
+        }).then(({ response }) => {
+          if (response === 0) {
+            shell.openExternal('https://console.aws.amazon.com/bedrock/home?region=us-east-1#/modelaccess');
+          }
+        });
+      } else {
+        console.log('✅  Bedrock access validated');
+      }
+    });
   }
 });
 
@@ -925,7 +946,11 @@ ipcMain.handle('verify-aws', async (event, credentials) => {
     }));
     return { success: true };
   } catch (e) {
-    return { success: false, error: e.message };
+    let error = e.message;
+    if (e.message?.includes('Invalid API Key') || e.name === 'AccessDeniedException') {
+      error = 'Bedrock model access not enabled. Go to AWS Console → Amazon Bedrock → Model access → Enable Amazon Nova models, then retry.';
+    }
+    return { success: false, error };
   }
 });
 
