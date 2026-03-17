@@ -407,16 +407,29 @@ def speak_text(text):
     subprocess.run(["say", "-v", "Samantha", "-r", "185", text], capture_output=True)
 
 
+def _has_aws_credentials():
+    key = os.environ.get('AWS_ACCESS_KEY_ID', '').strip()
+    secret = os.environ.get('AWS_SECRET_ACCESS_KEY', '').strip()
+    return bool(key) and bool(secret)
+
+
+async def _run_with_timeout(coro, timeout_sec):
+    return await asyncio.wait_for(coro, timeout=timeout_sec)
+
+
 def fallback_listen(duration=6):
     try:
         import speech_recognition as sr
         r = sr.Recognizer()
         with sr.Microphone(sample_rate=16000) as src:
             r.adjust_for_ambient_noise(src, duration=0.5)
-            print("VOICE_LOG:🎙️ Listening (fallback)...", file=sys.stderr)
+            print("VOICE_LOG:Listening (fallback)...", file=sys.stderr)
             audio = r.listen(src, timeout=duration, phrase_time_limit=duration)
-        return r.recognize_google(audio)
-    except:
+        text = r.recognize_google(audio)
+        print(f"VOICE_LOG:Fallback got: {text}", file=sys.stderr)
+        return text
+    except Exception as e:
+        print(f"VOICE_LOG:Fallback error: {e}", file=sys.stderr)
         return ""
 
 
@@ -427,11 +440,15 @@ if __name__ == "__main__":
 
     mode = sys.argv[1]
 
+    use_sonic = SONIC_AVAILABLE and _has_aws_credentials()
+    if not _has_aws_credentials():
+        print("VOICE_LOG:No AWS credentials found, using fallback STT", file=sys.stderr)
+
     if mode == "listen":
         dur = int(sys.argv[2]) if len(sys.argv) > 2 else 8
-        if SONIC_AVAILABLE:
+        if use_sonic:
             try:
-                txt = asyncio.run(run_listen(dur))
+                txt = asyncio.run(_run_with_timeout(run_listen(dur), timeout_sec=dur + 10))
                 print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic"}))
             except Exception as e:
                 print(f"VOICE_LOG:Sonic failed: {e}, using fallback", file=sys.stderr)
@@ -449,9 +466,9 @@ if __name__ == "__main__":
     elif mode == "listen_smart":
         max_dur = int(sys.argv[2]) if len(sys.argv) > 2 else 15
         silence_sec = float(sys.argv[3]) if len(sys.argv) > 3 else 3.0
-        if SONIC_AVAILABLE:
+        if use_sonic:
             try:
-                txt = asyncio.run(run_listen_smart(max_dur, silence_sec))
+                txt = asyncio.run(_run_with_timeout(run_listen_smart(max_dur, silence_sec), timeout_sec=max_dur + 10))
                 print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic-smart"}))
             except Exception as e:
                 print(f"VOICE_LOG:Sonic smart failed: {e}, using fallback", file=sys.stderr)

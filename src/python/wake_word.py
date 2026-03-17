@@ -68,11 +68,12 @@ def main():
             if keyword_index >= 0:
                 print("WAKE_WORD_DETECTED", flush=True)
 
-                # Pause listening — wait for RESUME from Electron
+                audio_stream.stop_stream()
                 try:
                     while True:
                         line = sys.stdin.readline().strip()
                         if line == "RESUME":
+                            audio_stream.start_stream()
                             print(f"WAKE_WORD_READY:Resumed listening for '{keyword}'", flush=True)
                             break
                         if not line:

@@ -157,13 +157,15 @@ function parseNoteIntoTasks(noteBody) {
     .filter((line) => line.length > 2 && !line.startsWith('#'));
 }
 
-const voiceEnv = {
-  ...process.env,
-  AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID || '',
-  AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY || '',
-  AWS_REGION: process.env.AWS_REGION || 'us-east-1',
-  PATH: '/opt/anaconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
-};
+function getVoiceEnv() {
+  return {
+    ...process.env,
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID || '',
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY || '',
+    AWS_REGION: process.env.AWS_REGION || 'us-east-1',
+    PATH: '/opt/homebrew/bin:/usr/local/bin:/Library/Frameworks/Python.framework/Versions/Current/bin:/opt/anaconda3/bin:/usr/bin:/bin',
+  };
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -640,23 +642,31 @@ function listenForVoice(mode = 'listen') {
     : ['src/python/voice_engine.py', 'listen'];
   return new Promise((resolve) => {
     const proc = spawn(getPythonPath(), args.map(a => a === 'src/python/voice_engine.py' ? getPythonScriptPath('voice_engine.py') : a), {
-      env: voiceEnv,
+      env: getVoiceEnv(),
       timeout: 90000,
     });
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
-    proc.on('close', () => {
+    proc.stderr.on('data', (d) => {
+      const chunk = d.toString();
+      stderr += chunk;
+      console.log('🎤 Voice engine:', chunk.trim());
+    });
+    proc.on('close', (code) => {
+      console.log(`🎤 Voice engine exited code=${code}, stdout=${stdout.length}b, stderr=${stderr.length}b`);
+      if (stderr) console.log('🎤 Voice stderr:', stderr.trim());
       const line = stdout.split('\n').find(l => l.startsWith('VOICE_RESULT:'));
       if (line) {
         try {
-          resolve(JSON.parse(line.replace('VOICE_RESULT:', '')));
+          const result = JSON.parse(line.replace('VOICE_RESULT:', ''));
+          console.log('🎤 Voice result:', JSON.stringify(result));
+          resolve(result);
         } catch (e) {
           resolve({ transcription: '', error: 'Parse error' });
         }
       } else {
-        resolve({ transcription: '', error: 'No result' });
+        resolve({ transcription: '', error: `No result (exit code ${code})` });
       }
     });
     proc.on('error', (e) => {
@@ -835,7 +845,7 @@ ipcMain.handle('execute-command', async (event, userInput) => {
 
 ipcMain.handle('voice-listen', async () => {
   try {
-    const out = execSync(getPythonPath() + " '" + getPythonScriptPath('voice_engine.py') + "' listen", { timeout: 90000, maxBuffer: 5*1024*1024, encoding: 'utf-8', env: voiceEnv });
+    const out = execSync(getPythonPath() + " '" + getPythonScriptPath('voice_engine.py') + "' listen", { timeout: 90000, maxBuffer: 5*1024*1024, encoding: 'utf-8', env: getVoiceEnv() });
     const line = out.split('\n').find(l => l.startsWith('VOICE_RESULT:'));
     if (line) return JSON.parse(line.replace('VOICE_RESULT:', ''));
     return { transcription: '', error: 'No result' };
