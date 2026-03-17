@@ -3,10 +3,15 @@ NovaAssist Voice Engine — Based exactly on AWS official SimpleNovaSonic sample
 """
 import os, sys, asyncio, base64, json, uuid, subprocess, pyaudio
 
-from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient, InvokeModelWithBidirectionalStreamOperationInput
-from aws_sdk_bedrock_runtime.models import InvokeModelWithBidirectionalStreamInputChunk, BidirectionalInputPayloadPart
-from aws_sdk_bedrock_runtime.config import Config, HTTPAuthSchemeResolver, SigV4AuthScheme
-from smithy_aws_core.identity import EnvironmentCredentialsResolver
+SONIC_AVAILABLE = False
+try:
+    from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient, InvokeModelWithBidirectionalStreamOperationInput
+    from aws_sdk_bedrock_runtime.models import InvokeModelWithBidirectionalStreamInputChunk, BidirectionalInputPayloadPart
+    from aws_sdk_bedrock_runtime.config import Config, HTTPAuthSchemeResolver, SigV4AuthScheme
+    from smithy_aws_core.identity import EnvironmentCredentialsResolver
+    SONIC_AVAILABLE = True
+except ImportError:
+    print("VOICE_LOG:Nova Sonic SDK not available (requires Python 3.12+), using fallback STT", file=sys.stderr)
 
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
@@ -424,11 +429,15 @@ if __name__ == "__main__":
 
     if mode == "listen":
         dur = int(sys.argv[2]) if len(sys.argv) > 2 else 8
-        try:
-            txt = asyncio.run(run_listen(dur))
-            print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic"}))
-        except Exception as e:
-            print(f"VOICE_LOG:Sonic failed: {e}, using fallback", file=sys.stderr)
+        if SONIC_AVAILABLE:
+            try:
+                txt = asyncio.run(run_listen(dur))
+                print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic"}))
+            except Exception as e:
+                print(f"VOICE_LOG:Sonic failed: {e}, using fallback", file=sys.stderr)
+                txt = fallback_listen(dur)
+                print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "fallback"}))
+        else:
             txt = fallback_listen(dur)
             print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "fallback"}))
 
@@ -440,15 +449,22 @@ if __name__ == "__main__":
     elif mode == "listen_smart":
         max_dur = int(sys.argv[2]) if len(sys.argv) > 2 else 15
         silence_sec = float(sys.argv[3]) if len(sys.argv) > 3 else 3.0
-        try:
-            txt = asyncio.run(run_listen_smart(max_dur, silence_sec))
-            print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic-smart"}))
-        except Exception as e:
-            print(f"VOICE_LOG:Sonic smart failed: {e}, using fallback", file=sys.stderr)
+        if SONIC_AVAILABLE:
+            try:
+                txt = asyncio.run(run_listen_smart(max_dur, silence_sec))
+                print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic-smart"}))
+            except Exception as e:
+                print(f"VOICE_LOG:Sonic smart failed: {e}, using fallback", file=sys.stderr)
+                txt = fallback_listen(max_dur)
+                print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "fallback"}))
+        else:
             txt = fallback_listen(max_dur)
             print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "fallback"}))
 
     elif mode == "interactive":
-        print("Nova 2 Sonic Interactive Mode. Press Enter to stop.")
-        txt = asyncio.run(run_interactive())
-        print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic"}))
+        if not SONIC_AVAILABLE:
+            print("VOICE_RESULT:" + json.dumps({"transcription": "", "error": "Nova Sonic requires Python 3.12+", "engine": "none"}))
+        else:
+            print("Nova 2 Sonic Interactive Mode. Press Enter to stop.")
+            txt = asyncio.run(run_interactive())
+            print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic"}))

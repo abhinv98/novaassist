@@ -3,6 +3,8 @@ pyaudio
 Pillow
 pvporcupine
 nova-act; python_version >= "3.10"
+aws_sdk_bedrock_runtime; python_version >= "3.12"
+smithy-aws-core; python_version >= "3.12"
 pyobjc-framework-Quartz
 pyobjc-framework-ApplicationServices
 pyobjc-framework-Cocoa
