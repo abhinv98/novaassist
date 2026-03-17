@@ -876,31 +876,40 @@ ipcMain.handle('verify-aws', async (event, credentials) => {
 
 ipcMain.handle('install-deps', async () => {
   const { spawn } = require('child_process');
-  return new Promise((resolve) => {
-    const reqPath = path.join(__dirname, 'requirements.txt');
-    const proc = spawn('pip3', ['install', '-r', reqPath, '--user', '--break-system-packages'], {
-      env: { ...process.env },
-      timeout: 300000,
+  function runPipInstall(args) {
+    return new Promise((resolve) => {
+      const reqPath = path.join(__dirname, 'requirements.txt');
+      const proc = spawn('pip3', ['install', '-r', reqPath, ...args], {
+        env: { ...process.env },
+        timeout: 300000,
+      });
+      let output = '';
+      proc.stdout.on('data', (d) => {
+        output += d.toString();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('deps-output', d.toString());
+        }
+      });
+      proc.stderr.on('data', (d) => {
+        output += d.toString();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('deps-output', d.toString());
+        }
+      });
+      proc.on('close', (code) => {
+        resolve({ success: code === 0, output, exitCode: code });
+      });
     });
-    let output = '';
-    proc.stdout.on('data', (d) => {
-      output += d.toString();
+  }
+  return new Promise(async (resolve) => {
+    let result = await runPipInstall(['--user', '--break-system-packages']);
+    if (!result.success && result.output.includes('no such option: --break-system-packages')) {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('deps-output', d.toString());
+        mainWindow.webContents.send('deps-output', 'Retrying without --break-system-packages...\n');
       }
-    });
-    proc.stderr.on('data', (d) => {
-      output += d.toString();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('deps-output', d.toString());
-      }
-    });
-    proc.on('close', (code) => {
-      resolve({ success: code === 0, output, exitCode: code });
-    });
-    proc.on('error', (e) => {
-      resolve({ success: false, output, error: e.message });
-    });
+      result = await runPipInstall(['--user']);
+    }
+    resolve(result);
   });
 });
 
