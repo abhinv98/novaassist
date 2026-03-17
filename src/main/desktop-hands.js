@@ -519,13 +519,37 @@ async function getRunningApps() {
 
 // ─── Screen Agent (Computer Use) ─────────────────────────────
 
+function _findPython() {
+  const fs = require("fs");
+  const candidates = [
+    "/opt/anaconda3/bin/python3",
+    "/usr/local/bin/python3",
+    "/opt/homebrew/bin/python3",
+    "/usr/bin/python3",
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return "python3";
+}
+
+function _scriptPath(name) {
+  try {
+    const { app } = require("electron");
+    if (app.isPackaged) {
+      return path.join(process.resourcesPath, "python", name);
+    }
+  } catch (e) {}
+  return path.join(__dirname, "..", "python", name);
+}
+
 function runScreenAgent(task, maxSteps = 10) {
   const { spawn } = require("child_process");
   const payload = JSON.stringify({ task, max_steps: maxSteps });
 
   return new Promise((resolve) => {
-    const proc = spawn("/opt/anaconda3/bin/python3", [
-      path.join(__dirname, "..", "python", "screen_agent.py"),
+    const proc = spawn(_findPython(), [
+      _scriptPath("screen_agent.py"),
       payload,
     ], {
       env: {
@@ -569,6 +593,82 @@ function runScreenAgent(task, maxSteps = 10) {
   });
 }
 
+// ─── Describe Screen (AX element detection) ─────────────────
+
+function runDescribeScreen() {
+  const { spawn } = require("child_process");
+
+  return new Promise((resolve) => {
+    const proc = spawn(_findPython(), [
+      _scriptPath("describe_screen.py"),
+    ], {
+      env: { ...process.env },
+      timeout: 30000,
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (d) => { stdout += d.toString(); });
+    proc.stderr.on("data", (d) => { stderr += d.toString(); });
+
+    proc.on("close", (code) => {
+      const resultLine = stdout.split("\n").find((l) => l.startsWith("DESCRIBE_RESULT:"));
+      if (resultLine) {
+        try {
+          resolve(JSON.parse(resultLine.replace("DESCRIBE_RESULT:", "")));
+        } catch (e) {
+          resolve({ elements_text: "Could not detect elements.", screenshot_path: "/tmp/nova_describe_screen.png", error: "Parse error" });
+        }
+      } else {
+        resolve({ elements_text: "Could not detect elements.", screenshot_path: "/tmp/nova_describe_screen.png", error: stderr || `Exited with code ${code}` });
+      }
+    });
+
+    proc.on("error", (e) => {
+      resolve({ elements_text: "Could not detect elements.", screenshot_path: "", error: e.message });
+    });
+  });
+}
+
+// ─── Notification Agent ──────────────────────────────────────
+
+function runNotificationAgent(minutes = 60) {
+  const { spawn } = require("child_process");
+  const payload = JSON.stringify({ minutes, limit: 20 });
+
+  return new Promise((resolve) => {
+    const proc = spawn(_findPython(), [
+      _scriptPath("notification_agent.py"),
+      payload,
+    ], {
+      env: { ...process.env },
+      timeout: 15000,
+    });
+
+    let stdout = "";
+    proc.stdout.on("data", (d) => { stdout += d.toString(); });
+    proc.stderr.on("data", () => {});
+
+    proc.on("close", () => {
+      const line = stdout.split("\n").find((l) => l.startsWith("NOTIFICATION_RESULT:"));
+      if (line) {
+        try {
+          resolve(JSON.parse(line.replace("NOTIFICATION_RESULT:", "")));
+        } catch (e) {
+          resolve({ notifications: [], error: "Parse error" });
+        }
+      } else {
+        resolve({ notifications: [], error: "No result" });
+      }
+    });
+
+    proc.on("error", (e) => {
+      resolve({ notifications: [], error: e.message });
+    });
+  });
+}
+
 module.exports = {
   executeCommand,
   takeScreenshot,
@@ -598,4 +698,6 @@ module.exports = {
   openInFinder,
   getRunningApps,
   runScreenAgent,
+  runDescribeScreen,
+  runNotificationAgent,
 };

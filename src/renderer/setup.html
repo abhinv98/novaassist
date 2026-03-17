@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>NovaAssist Setup</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#000;color:#fff;overflow:hidden;height:100vh;-webkit-app-region:drag}
+input,button,textarea{-webkit-app-region:no-drag}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#222;border-radius:2px}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+function CheckIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00cc88" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>;
+}
+function XIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ff4444" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+}
+function SpinIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0070f3" strokeWidth="2" strokeLinecap="round" style={{animation:'spin 1s linear infinite'}}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
+}
+
+function StepIndicator({ current, total }) {
+  return (
+    <div style={{display:'flex',gap:'6px',alignItems:'center',marginBottom:'32px'}}>
+      {Array.from({length:total},(_,i)=>(
+        <div key={i} style={{
+          width: i===current ? '24px' : '8px',
+          height:'8px',
+          borderRadius:'4px',
+          backgroundColor: i<current ? '#00cc88' : i===current ? '#0070f3' : '#1a1a1a',
+          transition:'all 300ms ease',
+        }}/>
+      ))}
+      <span style={{marginLeft:'8px',fontSize:'12px',color:'#444'}}>Step {current+1} of {total}</span>
+    </div>
+  );
+}
+
+function Btn({ children, onClick, primary, disabled, small }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      padding: small ? '8px 16px' : '10px 24px',
+      borderRadius:'8px',
+      border: primary ? 'none' : '1px solid #2a2a2a',
+      backgroundColor: disabled ? '#111' : primary ? '#0070f3' : 'transparent',
+      color: disabled ? '#444' : '#fff',
+      fontSize:'13px',
+      fontWeight:500,
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      fontFamily:'Inter,system-ui,sans-serif',
+      transition:'all 150ms ease',
+      outline:'none',
+    }}>{children}</button>
+  );
+}
+
+function InputField({ label, value, onChange, type, placeholder }) {
+  return (
+    <div style={{marginBottom:'16px'}}>
+      <label style={{display:'block',fontSize:'12px',color:'#888',marginBottom:'6px',fontWeight:500}}>{label}</label>
+      <input type={type||'text'} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+        style={{
+          width:'100%',padding:'10px 14px',borderRadius:'8px',border:'1px solid #2a2a2a',
+          backgroundColor:'#0a0a0a',color:'#fff',fontSize:'13px',outline:'none',
+          fontFamily:'Inter,system-ui,sans-serif',
+        }}
+        onFocus={e=>e.target.style.borderColor='#0070f3'}
+        onBlur={e=>e.target.style.borderColor='#2a2a2a'}
+      />
+    </div>
+  );
+}
+
+// Step 0: Welcome
+function WelcomeStep({ onNext }) {
+  return (
+    <div style={{animation:'fadeIn 400ms ease'}}>
+      <h1 style={{fontSize:'28px',fontWeight:700,marginBottom:'12px',letterSpacing:'-0.02em'}}>Welcome to NovaAssist</h1>
+      <p style={{fontSize:'15px',color:'#999',lineHeight:1.7,marginBottom:'8px'}}>
+        A voice-first AI desktop agent for macOS, built for visually impaired users.
+      </p>
+      <p style={{fontSize:'14px',color:'#666',lineHeight:1.7,marginBottom:'40px'}}>
+        Before we start, we need to set up a few things. This will take about 2 minutes.
+      </p>
+      <Btn primary onClick={onNext}>Begin Setup</Btn>
+    </div>
+  );
+}
+
+// Step 1: Accessibility
+function AccessibilityStep({ onNext }) {
+  const [checked, setChecked] = useState(null);
+
+  const check = useCallback(async () => {
+    const r = await window.novaAssist.checkAccessibility();
+    setChecked(r);
+  }, []);
+
+  useEffect(() => { check(); }, [check]);
+
+  return (
+    <div style={{animation:'fadeIn 400ms ease'}}>
+      <h2 style={{fontSize:'20px',fontWeight:600,marginBottom:'8px'}}>Accessibility Permission</h2>
+      <p style={{fontSize:'14px',color:'#999',lineHeight:1.7,marginBottom:'20px'}}>
+        NovaAssist needs Accessibility access to detect UI elements on your screen and control mouse/keyboard.
+      </p>
+      <div style={{backgroundColor:'#0a0a0a',border:'1px solid #1a1a1a',borderRadius:'10px',padding:'20px',marginBottom:'20px'}}>
+        <p style={{fontSize:'13px',color:'#bbb',lineHeight:1.8}}>
+          1. Click "Open System Settings" below<br/>
+          2. Go to Privacy and Security, then Accessibility<br/>
+          3. Find NovaAssist and toggle it ON<br/>
+          4. If NovaAssist is not listed, click the + button and add it
+        </p>
+      </div>
+      <div style={{display:'flex',gap:'12px',alignItems:'center',marginBottom:'20px'}}>
+        <Btn onClick={()=>window.novaAssist.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')}>
+          Open System Settings
+        </Btn>
+        <Btn onClick={check} small>Check Again</Btn>
+        {checked === true && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Granted</span>}
+        {checked === false && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#ff9900'}}>Not yet granted</span>}
+      </div>
+      <Btn primary onClick={onNext}>Next</Btn>
+    </div>
+  );
+}
+
+// Step 2: Microphone
+function MicrophoneStep({ onNext }) {
+  const [status, setStatus] = useState(null);
+
+  const test = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      setStatus('granted');
+    } catch (e) {
+      setStatus('denied');
+    }
+  }, []);
+
+  return (
+    <div style={{animation:'fadeIn 400ms ease'}}>
+      <h2 style={{fontSize:'20px',fontWeight:600,marginBottom:'8px'}}>Microphone Permission</h2>
+      <p style={{fontSize:'14px',color:'#999',lineHeight:1.7,marginBottom:'20px'}}>
+        NovaAssist needs microphone access to hear your voice commands. macOS will prompt you when you click "Test Microphone".
+      </p>
+      <div style={{display:'flex',gap:'12px',alignItems:'center',marginBottom:'20px'}}>
+        <Btn onClick={test}>Test Microphone</Btn>
+        {status === 'granted' && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Microphone working</span>}
+        {status === 'denied' && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#ff4444'}}><XIcon/> Permission denied</span>}
+      </div>
+      <Btn primary onClick={onNext}>Next</Btn>
+    </div>
+  );
+}
+
+// Step 3: AWS Credentials
+function AwsStep({ config, setConfig, onNext }) {
+  const [verifying, setVerifying] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [error, setError] = useState('');
+
+  const verify = useCallback(async () => {
+    setVerifying(true);
+    setStatus(null);
+    setError('');
+    const creds = config.aws || {};
+    const r = await window.novaAssist.verifyAws(creds);
+    setVerifying(false);
+    if (r.success) {
+      setStatus('ok');
+      await window.novaAssist.saveConfig(config);
+    } else {
+      setStatus('fail');
+      setError(r.error || 'Verification failed');
+    }
+  }, [config]);
+
+  const update = (field, val) => {
+    setConfig(prev => ({ ...prev, aws: { ...prev.aws, [field]: val } }));
+    setStatus(null);
+  };
+
+  return (
+    <div style={{animation:'fadeIn 400ms ease'}}>
+      <h2 style={{fontSize:'20px',fontWeight:600,marginBottom:'8px'}}>AWS Credentials</h2>
+      <p style={{fontSize:'14px',color:'#999',lineHeight:1.7,marginBottom:'20px'}}>
+        NovaAssist uses Amazon Bedrock to power its AI models. You need an AWS account with Bedrock access enabled.
+      </p>
+      <InputField label="AWS Access Key ID" value={config.aws?.accessKeyId||''} onChange={v=>update('accessKeyId',v)} placeholder="AKIA..." />
+      <InputField label="AWS Secret Access Key" value={config.aws?.secretAccessKey||''} onChange={v=>update('secretAccessKey',v)} type="password" placeholder="Your secret key" />
+      <div style={{marginBottom:'16px'}}>
+        <label style={{display:'block',fontSize:'12px',color:'#888',marginBottom:'6px',fontWeight:500}}>AWS Region</label>
+        <select value={config.aws?.region||'us-east-1'} onChange={e=>update('region',e.target.value)}
+          style={{width:'100%',padding:'10px 14px',borderRadius:'8px',border:'1px solid #2a2a2a',backgroundColor:'#0a0a0a',color:'#fff',fontSize:'13px',outline:'none'}}>
+          <option value="us-east-1">us-east-1 (N. Virginia)</option>
+          <option value="us-west-2">us-west-2 (Oregon)</option>
+          <option value="eu-west-1">eu-west-1 (Ireland)</option>
+        </select>
+      </div>
+      <p style={{fontSize:'12px',color:'#555',marginBottom:'20px'}}>
+        These credentials are stored locally on your Mac only. They are never sent anywhere except directly to AWS Bedrock.
+      </p>
+      <div style={{display:'flex',gap:'12px',alignItems:'center',marginBottom:'20px'}}>
+        <Btn onClick={verify} disabled={verifying || !config.aws?.accessKeyId || !config.aws?.secretAccessKey}>
+          {verifying ? 'Verifying...' : 'Verify Credentials'}
+        </Btn>
+        {verifying && <SpinIcon/>}
+        {status === 'ok' && <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Credentials verified</span>}
+        {status === 'fail' && <span style={{fontSize:'12px',color:'#ff4444'}}>{error.length > 80 ? error.slice(0,80)+'...' : error}</span>}
+      </div>
+      <Btn primary onClick={onNext}>Next</Btn>
+    </div>
+  );
+}
+
+// Step 4: Picovoice
+function PicovoiceStep({ config, setConfig, onNext }) {
+  const update = (val) => {
+    setConfig(prev => ({ ...prev, picovoice: { ...prev.picovoice, accessKey: val } }));
+  };
+
+  return (
+    <div style={{animation:'fadeIn 400ms ease'}}>
+      <h2 style={{fontSize:'20px',fontWeight:600,marginBottom:'8px'}}>Wake Word Setup (Picovoice)</h2>
+      <p style={{fontSize:'14px',color:'#999',lineHeight:1.7,marginBottom:'20px'}}>
+        NovaAssist uses "Jarvis" as a wake word, powered by Picovoice. You need a free Picovoice Access Key.
+      </p>
+      <div style={{backgroundColor:'#0a0a0a',border:'1px solid #1a1a1a',borderRadius:'10px',padding:'20px',marginBottom:'20px'}}>
+        <p style={{fontSize:'13px',color:'#bbb',lineHeight:1.8}}>
+          1. Go to console.picovoice.ai and create a free account<br/>
+          2. Copy your Access Key from the dashboard<br/>
+          3. Paste it below
+        </p>
+      </div>
+      <InputField label="Picovoice Access Key" value={config.picovoice?.accessKey||''} onChange={update} placeholder="Your Picovoice key" />
+      <div style={{display:'flex',gap:'12px',marginBottom:'20px'}}>
+        <Btn onClick={()=>window.novaAssist.openExternal('https://console.picovoice.ai/')}>Open Picovoice Console</Btn>
+      </div>
+      <p style={{fontSize:'12px',color:'#555',marginBottom:'20px'}}>
+        This step is optional. Without it, you can still use Cmd+Shift+Space to activate voice.
+      </p>
+      <Btn primary onClick={async()=>{await window.novaAssist.saveConfig(config);onNext();}}>Next</Btn>
+    </div>
+  );
+}
+
+// Step 5: Dependencies
+function DepsStep({ onNext }) {
+  const [status, setStatus] = useState('idle');
+  const [log, setLog] = useState('');
+  const [showLog, setShowLog] = useState(false);
+  const logRef = useRef(null);
+
+  useEffect(() => {
+    if (window.novaAssist?.onDepsOutput) {
+      window.novaAssist.onDepsOutput((data) => {
+        setLog(prev => prev + data);
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [log]);
+
+  const install = useCallback(async () => {
+    setStatus('running');
+    setLog('');
+    const r = await window.novaAssist.installDeps();
+    setStatus(r.success ? 'done' : 'error');
+    if (!r.success) setLog(prev => prev + '\n\nError: ' + (r.error || 'Installation failed'));
+  }, []);
+
+  return (
+    <div style={{animation:'fadeIn 400ms ease'}}>
+      <h2 style={{fontSize:'20px',fontWeight:600,marginBottom:'8px'}}>Installing Dependencies</h2>
+      <p style={{fontSize:'14px',color:'#999',lineHeight:1.7,marginBottom:'20px'}}>
+        NovaAssist needs some Python packages. Click below to install them automatically.
+      </p>
+      {status === 'idle' && <Btn primary onClick={install}>Install Dependencies</Btn>}
+      {status === 'running' && (
+        <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'16px'}}>
+          <SpinIcon/> <span style={{fontSize:'13px',color:'#999'}}>Installing packages...</span>
+        </div>
+      )}
+      {status === 'done' && (
+        <div style={{marginBottom:'16px'}}>
+          <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'14px',color:'#00cc88',marginBottom:'16px'}}><CheckIcon/> All dependencies installed</span>
+          <Btn primary onClick={onNext}>Next</Btn>
+        </div>
+      )}
+      {status === 'error' && (
+        <div style={{marginBottom:'16px'}}>
+          <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'14px',color:'#ff4444',marginBottom:'8px'}}><XIcon/> Installation failed</span>
+          <p style={{fontSize:'12px',color:'#888',marginBottom:'12px'}}>If PyAudio fails, run: brew install portaudio</p>
+          <div style={{display:'flex',gap:'12px'}}>
+            <Btn onClick={install}>Retry</Btn>
+            <Btn primary onClick={onNext}>Skip</Btn>
+          </div>
+        </div>
+      )}
+      {log && (
+        <div style={{marginTop:'16px'}}>
+          <button onClick={()=>setShowLog(!showLog)} style={{background:'none',border:'none',color:'#555',fontSize:'12px',cursor:'pointer',fontFamily:'Inter,system-ui'}}>
+            {showLog ? 'Hide' : 'Show'} Log
+          </button>
+          {showLog && (
+            <textarea ref={logRef} readOnly value={log} style={{
+              width:'100%',height:'200px',marginTop:'8px',padding:'12px',borderRadius:'8px',border:'1px solid #1a1a1a',
+              backgroundColor:'#0a0a0a',color:'#888',fontSize:'11px',fontFamily:'Menlo,Monaco,monospace',resize:'none',outline:'none',
+            }}/>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Step 6: Done
+function DoneStep() {
+  const launch = useCallback(async () => {
+    await window.novaAssist.completeSetup();
+  }, []);
+
+  return (
+    <div style={{animation:'fadeIn 400ms ease',textAlign:'center'}}>
+      <div style={{width:'64px',height:'64px',borderRadius:'50%',backgroundColor:'#00cc8820',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 24px'}}>
+        <CheckIcon/>
+      </div>
+      <h2 style={{fontSize:'24px',fontWeight:700,marginBottom:'12px'}}>NovaAssist is Ready</h2>
+      <p style={{fontSize:'15px',color:'#999',lineHeight:1.7,marginBottom:'8px'}}>
+        Say "Jarvis" or press Cmd+Shift+Space to start.
+      </p>
+      <p style={{fontSize:'13px',color:'#555',marginBottom:'32px'}}>
+        You can change settings later in ~/.novaassist/config.json
+      </p>
+      <Btn primary onClick={launch}>Launch NovaAssist</Btn>
+    </div>
+  );
+}
+
+function SetupWizard() {
+  const [step, setStep] = useState(0);
+  const [config, setConfig] = useState({ aws: { region: 'us-east-1' }, picovoice: {} });
+  const totalSteps = 6;
+
+  useEffect(() => {
+    (async () => {
+      if (window.novaAssist?.getConfig) {
+        const existing = await window.novaAssist.getConfig();
+        if (existing && Object.keys(existing).length > 0) {
+          setConfig(prev => ({ ...prev, ...existing }));
+        }
+      }
+    })();
+  }, []);
+
+  const next = () => setStep(s => Math.min(s + 1, totalSteps - 1));
+
+  return (
+    <div style={{
+      height:'100vh',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+      padding:'40px',maxWidth:'560px',margin:'0 auto',
+    }}>
+      {step > 0 && step < totalSteps - 1 && <StepIndicator current={step-1} total={totalSteps-2}/>}
+      {step === 0 && <WelcomeStep onNext={next}/>}
+      {step === 1 && <AccessibilityStep onNext={next}/>}
+      {step === 2 && <MicrophoneStep onNext={next}/>}
+      {step === 3 && <AwsStep config={config} setConfig={setConfig} onNext={next}/>}
+      {step === 4 && <PicovoiceStep config={config} setConfig={setConfig} onNext={next}/>}
+      {step === 5 && <DepsStep onNext={next}/>}
+      {step === 6 && <DoneStep/>}
+      <div style={{position:'fixed',bottom:'20px',left:'50%',transform:'translateX(-50%)',fontSize:'11px',color:'#222'}}>
+        Powered by Amazon Nova
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(SetupWizard));
+</script>
+</body>
+</html>

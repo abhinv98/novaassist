@@ -295,7 +295,7 @@ CLICKABLE_ROLES = {
     'AXStaticText',
 }
 
-def detect_ax_elements(max_depth=8, max_elems=50):
+def detect_ax_elements(max_depth=8, max_elems=20):
     """Use macOS Accessibility API to find interactive elements in the frontmost app."""
     if not AX_AVAILABLE:
         return []
@@ -394,8 +394,53 @@ def add_som_overlay(image_path, output_path, elements):
     return output_path
 
 
+def _get_active_window_bounds():
+    """Get the frontmost window's position and size via AppleScript."""
+    try:
+        script = '''
+        tell application "System Events"
+            set fp to first application process whose frontmost is true
+            tell fp
+                set w to window 1
+                set {px, py} to position of w
+                set {sw, sh} to size of w
+                return (px as text) & "," & (py as text) & "," & (sw as text) & "," & (sh as text)
+            end tell
+        end tell
+        '''
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            parts = r.stdout.strip().split(",")
+            if len(parts) == 4:
+                return tuple(int(float(p)) for p in parts)
+    except Exception:
+        pass
+    return None
+
+
+def _downscale_image(path, max_width=1280):
+    """Resize image if wider than max_width, preserving aspect ratio."""
+    img = Image.open(path)
+    if img.width > max_width:
+        ratio = max_width / img.width
+        new_size = (max_width, int(img.height * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+        img.save(path, "PNG")
+        return ratio
+    return 1.0
+
+
 def take_screenshot():
-    subprocess.run(["screencapture", "-x", SCREENSHOT_PATH], check=True, capture_output=True)
+    bounds = _get_active_window_bounds()
+    if bounds:
+        x, y, w, h = bounds
+        subprocess.run(
+            ["screencapture", "-x", "-R", f"{x},{y},{w},{h}", SCREENSHOT_PATH],
+            check=True, capture_output=True,
+        )
+    else:
+        subprocess.run(["screencapture", "-x", SCREENSHOT_PATH], check=True, capture_output=True)
+    _downscale_image(SCREENSHOT_PATH)
 
 
 def add_grid_overlay(image_path, output_path):
@@ -440,7 +485,21 @@ def screenshot_hash(path):
     return hashlib.md5(img.tobytes()).hexdigest()
 
 
-def analyze_screenshot(task, history, step, max_steps, no_change_warning="", som_elements=None):
+def analyze_screenshot(task, history, step, max_steps, no_change_warning="", som_elements=None, window_bounds=None):
+    img = Image.open(SCREENSHOT_PATH)
+    img_w, img_h = img.size
+
+    if som_elements and window_bounds:
+        wx, wy, ww, wh = window_bounds
+        scale = img_w / ww if ww > 0 else 1.0
+        for e in som_elements:
+            e['x'] = int((e['x'] - wx) * scale)
+            e['y'] = int((e['y'] - wy) * scale)
+            e['w'] = int(e['w'] * scale)
+            e['h'] = int(e['h'] * scale)
+            e['cx'] = int((e['cx'] - wx) * scale)
+            e['cy'] = int((e['cy'] - wy) * scale)
+
     if som_elements and len(som_elements) >= SOM_MIN_ELEMENTS:
         add_som_overlay(SCREENSHOT_PATH, SCREENSHOT_ANNOTATED_PATH, som_elements)
         print(f"SCREEN_AGENT_LOG:SoM mode: {len(som_elements)} labeled elements", file=sys.stderr)
@@ -464,7 +523,11 @@ def analyze_screenshot(task, history, step, max_steps, no_change_warning="", som
             ],
         }],
         "system": [{"text": VISION_SYSTEM}],
-        "inferenceConfig": {"maxTokens": 512, "temperature": 0.1},
+        "inferenceConfig": {"maxTokens": 1024, "temperature": 0.1},
+        "reasoningConfig": {
+            "type": "enabled",
+            "maxReasoningEffort": "medium",
+        },
     })
 
     response = bedrock.invoke_model(
@@ -474,8 +537,20 @@ def analyze_screenshot(task, history, step, max_steps, no_change_warning="", som
         accept="application/json",
     )
     result = json.loads(response["body"].read())
-    text = (result.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
-            or result.get("content", [{}])[0].get("text", ""))
+
+    content_blocks = (result.get("output", {}).get("message", {}).get("content", [])
+                      or result.get("content", []))
+    text = ""
+    for block in content_blocks:
+        if "reasoningContent" in block:
+            reasoning = block["reasoningContent"].get("reasoningText", {}).get("text", "")
+            if reasoning:
+                print(f"SCREEN_AGENT_LOG:Reasoning: {reasoning[:200]}", file=sys.stderr)
+        elif "text" in block:
+            text = block["text"]
+
+    if not text:
+        text = content_blocks[0].get("text", "") if content_blocks else ""
 
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -597,9 +672,10 @@ You MUST try something COMPLETELY DIFFERENT:
             history.append("ABORTED: Screenshot unchanged after 4 consecutive actions")
             break
 
+        window_bounds = _get_active_window_bounds()
         som_elements = detect_ax_elements()
         try:
-            decision = analyze_screenshot(task, history, step, max_steps, no_change_warning, som_elements)
+            decision = analyze_screenshot(task, history, step, max_steps, no_change_warning, som_elements, window_bounds)
         except Exception as e:
             print(f"SCREEN_AGENT_LOG:Vision error at step {step}: {e}", file=sys.stderr)
             history.append(f"Vision analysis failed: {e}")
@@ -611,6 +687,16 @@ You MUST try something COMPLETELY DIFFERENT:
         x = int(float(decision.get("x", 0)))
         y = int(float(decision.get("y", 0)))
         text = decision.get("text", "")
+
+        if window_bounds and action in ("click", "double_click", "right_click", "scroll_up", "scroll_down"):
+            wx, wy, ww, wh = window_bounds
+            img = Image.open(SCREENSHOT_PATH)
+            scale_x = ww / img.width if img.width > 0 else 1.0
+            scale_y = wh / img.height if img.height > 0 else 1.0
+            x = int(x * scale_x) + wx
+            y = int(y * scale_y) + wy
+            decision["x"] = x
+            decision["y"] = y
 
         if action == "type" and text:
             prev_types = [h for h in history if h.startswith("type: Typed:")]

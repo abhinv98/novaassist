@@ -1,21 +1,71 @@
 {
   "name": "nova-assist",
   "version": "1.0.0",
-  "description": "",
+  "description": "Voice-first AI desktop agent for macOS",
   "main": "main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "electron ."
+    "start": "electron .",
+    "build:mac": "electron-builder --mac",
+    "publish": "electron-builder --mac --publish always"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["voice", "ai", "desktop-agent", "macos", "accessibility", "amazon-nova"],
+  "author": "Abhinav Rai",
+  "license": "MIT",
   "type": "commonjs",
+  "build": {
+    "appId": "com.novaassist.app",
+    "productName": "NovaAssist",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "NovaAssist",
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "files": [
+      "src/**/*",
+      "main.js",
+      "preload.js",
+      "test-cli.js",
+      "requirements.txt",
+      "package.json",
+      "!src/python/__pycache__/**"
+    ],
+    "extraResources": [
+      {
+        "from": "src/python",
+        "to": "python",
+        "filter": ["**/*.py"]
+      },
+      {
+        "from": "requirements.txt",
+        "to": "requirements.txt"
+      }
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "abhinv98",
+      "repo": "novaassist"
+    }
+  },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1009.0",
     "dotenv": "^17.3.1"
   },
   "devDependencies": {
-    "electron": "^41.0.2"
+    "electron": "^41.0.2",
+    "electron-builder": "^26.8.1"
   }
 }

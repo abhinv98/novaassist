@@ -1,6 +1,8 @@
-const { app, BrowserWindow, ipcMain, globalShortcut, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, screen, systemPreferences, shell } = require('electron');
 const path = require('path');
-const { classifyIntent, analyzeScreenshot, generateObservation } = require('./src/main/brain');
+const fs = require('fs');
+const os = require('os');
+const { classifyIntent, analyzeScreenshot, generateObservation, describeScreen, summarizeDocument } = require('./src/main/brain');
 const {
   executeCommand, takeScreenshot, openChromeWithProfile, findChromeProfile,
   getChromeTabs, getActiveTabInfo, closeTab, switchToTab, newTab,
@@ -8,9 +10,85 @@ const {
   createNote, readNote, listNotes, appendToNote,
   openInCursor, createProjectAndOpen,
   revealInFinder, openInFinder, getRunningApps,
-  runScreenAgent,
+  runScreenAgent, runDescribeScreen, runNotificationAgent,
 } = require('./src/main/desktop-hands');
 const { execSync } = require('child_process');
+const { loadMemories, storeMemory, recallMemories, formatMemoriesForContext } = require('./src/main/memory');
+
+// ─── Config Management ───────────────────────────────────────────────────────
+
+const CONFIG_DIR = path.join(os.homedir(), '.novaassist');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+
+function loadConfig() {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    }
+  } catch (e) {
+    console.error('Config load error:', e.message);
+  }
+  return {};
+}
+
+function saveConfig(config) {
+  try {
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  } catch (e) {
+    console.error('Config save error:', e.message);
+  }
+}
+
+function isSetupComplete() {
+  const config = loadConfig();
+  return config.setupComplete === true;
+}
+
+function applyConfigToEnv() {
+  const config = loadConfig();
+  if (config.aws?.accessKeyId) process.env.AWS_ACCESS_KEY_ID = config.aws.accessKeyId;
+  if (config.aws?.secretAccessKey) process.env.AWS_SECRET_ACCESS_KEY = config.aws.secretAccessKey;
+  if (config.aws?.region) process.env.AWS_REGION = config.aws.region;
+  if (config.picovoice?.accessKey) process.env.PICOVOICE_ACCESS_KEY = config.picovoice.accessKey;
+}
+
+let _pythonPath = null;
+function getPythonPath() {
+  if (_pythonPath) return _pythonPath;
+  const config = loadConfig();
+  if (config.pythonPath && fs.existsSync(config.pythonPath)) {
+    _pythonPath = config.pythonPath;
+    return _pythonPath;
+  }
+  const candidates = [
+    '/opt/anaconda3/bin/python3',
+    '/usr/local/bin/python3',
+    '/opt/homebrew/bin/python3',
+    '/usr/bin/python3',
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      _pythonPath = p;
+      return _pythonPath;
+    }
+  }
+  try {
+    const which = execSync('which python3', { encoding: 'utf-8', timeout: 5000 }).trim();
+    if (which) { _pythonPath = which; return _pythonPath; }
+  } catch (e) {}
+  _pythonPath = 'python3';
+  return _pythonPath;
+}
+
+function getPythonScriptPath(scriptName) {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'python', scriptName);
+  }
+  return path.join(__dirname, 'src', 'python', scriptName);
+}
 
 let mainWindow;
 let overlayWindow = null;
@@ -83,8 +161,8 @@ const voiceEnv = {
   ...process.env,
   AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID || '',
   AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY || '',
-  AWS_REGION: 'us-east-1',
-  PATH: '/opt/anaconda3/bin:/usr/local/bin:/usr/bin:/bin',
+  AWS_REGION: process.env.AWS_REGION || 'us-east-1',
+  PATH: '/opt/anaconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
 };
 
 function createWindow() {
@@ -181,7 +259,7 @@ async function executeAction(action) {
     case 'browser_action': {
       const payload = JSON.stringify({ instruction: action.value, start_url: 'https://www.google.com', profile_dir: null });
       try {
-        const out = execSync("/opt/anaconda3/bin/python3 src/python/browser_agent.py '" + payload.replace(/'/g, "'\\''") + "'", { timeout: 120000, maxBuffer: 5*1024*1024, encoding: 'utf-8' });
+        const out = execSync(getPythonPath() + " '" + getPythonScriptPath('browser_agent.py') + "' '" + payload.replace(/'/g, "'\\''") + "'", { timeout: 120000, maxBuffer: 5*1024*1024, encoding: 'utf-8' });
         const line = out.split('\n').find(l => l.startsWith('NOVA_RESULT:'));
         if (line) {
           const r = JSON.parse(line.replace('NOVA_RESULT:', ''));
@@ -329,6 +407,74 @@ async function executeAction(action) {
       return revealInFinder(filePath);
     }
 
+    // ─── Notifications ─────────────────────────────────────────
+    case 'check_notifications': {
+      const minutes = parseInt(action.value, 10) || 60;
+      const notifResult = await runNotificationAgent(minutes);
+      if (notifResult.error) {
+        return { success: false, error: notifResult.error, description: 'Sorry, I could not read your notifications. ' + notifResult.error };
+      }
+      const notifs = notifResult.notifications || [];
+      if (notifs.length === 0) {
+        return { success: true, description: 'You have no recent notifications.', stdout: 'No recent notifications.' };
+      }
+      const appCounts = {};
+      notifs.forEach(n => { appCounts[n.app] = (appCounts[n.app] || 0) + 1; });
+      const summary = Object.entries(appCounts).map(([app, count]) => `${count} from ${app}`).join(', ');
+      const details = notifs.slice(0, 10).map(n => {
+        const parts = [n.app];
+        if (n.time) parts.push(`at ${n.time}`);
+        if (n.title) parts.push(n.title);
+        if (n.body) parts.push(n.body);
+        return parts.join(': ');
+      }).join('\n');
+      return {
+        success: true,
+        description: `You have ${notifs.length} recent notifications: ${summary}. Here are the latest: ${details}`,
+        stdout: details,
+      };
+    }
+
+    // ─── Memory Recall ─────────────────────────────────────────
+    case 'recall_memory': {
+      const query = action.value || session.lastCommand || 'recent actions';
+      const recalled = await recallMemories(query, 5).catch(() => []);
+      if (recalled.length === 0) {
+        return { success: true, description: "I don't have any relevant memories yet. As you use me more, I'll remember past interactions.", stdout: "No memories found." };
+      }
+      const memText = recalled.map((m, i) => `${i + 1}. ${m.timeAgo}: ${m.summary}`).join('\n');
+      return { success: true, description: `Here's what I remember:\n${memText}`, stdout: memText };
+    }
+
+    // ─── Describe Screen ──────────────────────────────────────
+    case 'describe_screen': {
+      quickAck('Let me look at your screen');
+      const detectResult = await runDescribeScreen();
+      if (!detectResult.screenshot_path) {
+        return { success: false, error: 'Could not capture screen', description: 'Sorry, I could not capture your screen.' };
+      }
+      const description = await describeScreen(detectResult.screenshot_path, detectResult.elements_text);
+      return { success: true, description, screenshot: detectResult.screenshot_path };
+    }
+
+    // ─── Read Document ────────────────────────────────────────
+    case 'read_document': {
+      quickAck('Reading the document on your screen');
+      const pages = [];
+      for (let i = 0; i < 3; i++) {
+        const pagePath = `/tmp/nova_doc_page_${i}.png`;
+        await takeScreenshot(pagePath);
+        pages.push(pagePath);
+        if (i < 2) {
+          await executeCommand('osascript -e \'tell application "System Events" to key code 121\'');
+          await new Promise(r => setTimeout(r, 1200));
+        }
+      }
+      const userQ = action.value ? `The user asks: "${action.value}". ` : '';
+      const summary = await summarizeDocument(pages, userQ + 'Extract and summarize the text content visible across these document pages. Focus on key information, headings, and important data. Present it as a concise spoken summary.');
+      return { success: true, description: summary, screenshot: pages[0] };
+    }
+
     default: return { success: true };
   }
 }
@@ -413,6 +559,12 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
     await updateSessionContext();
     session.lastCommand = text;
 
+    const recalled = await recallMemories(text).catch(() => []);
+    const memoryContext = formatMemoriesForContext(recalled);
+    if (memoryContext) {
+      session.memoryContext = memoryContext;
+    }
+
     sendOverlayUpdate({ state: 'thinking', status: 'Planning...', transcript: text });
     const plan = await classifyIntent(text, session);
 
@@ -460,6 +612,9 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
     session.lastResult = observation;
     console.log('👁️  Observation:', observation);
 
+    const primaryAction = (plan.actions || [])[0]?.type || 'unknown';
+    storeMemory(observation, primaryAction, true).catch((e) => console.error('Memory store error:', e.message));
+
     const displayObs = observation.length > 120 ? observation.slice(0, 120) + '…' : observation;
     sendOverlayUpdate({ state: 'done', status: displayObs, transcript: '' });
 
@@ -484,7 +639,7 @@ function listenForVoice(mode = 'listen') {
     ? ['src/python/voice_engine.py', 'listen_smart', '15', '3']
     : ['src/python/voice_engine.py', 'listen'];
   return new Promise((resolve) => {
-    const proc = spawn('/opt/anaconda3/bin/python3', args, {
+    const proc = spawn(getPythonPath(), args.map(a => a === 'src/python/voice_engine.py' ? getPythonScriptPath('voice_engine.py') : a), {
       env: voiceEnv,
       timeout: 90000,
     });
@@ -522,8 +677,8 @@ function startWakeWordDaemon() {
   const { spawn } = require('child_process');
   const keyword = process.env.WAKE_WORD || 'jarvis';
 
-  wakeWordProcess = spawn('/opt/anaconda3/bin/python3', [
-    'src/python/wake_word.py',
+  wakeWordProcess = spawn(getPythonPath(), [
+    getPythonScriptPath('wake_word.py'),
     '--access-key', accessKey,
     '--keyword', keyword,
   ], {
@@ -587,16 +742,24 @@ function stopWakeWordDaemon() {
 // ─── App Lifecycle ───────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
-  createWindow();
-  createOverlay();
+  applyConfigToEnv();
+  loadMemories();
 
-  globalShortcut.register('CommandOrControl+Shift+Space', () => {
-    runOverlayVoicePipeline();
-  });
+  if (!isSetupComplete()) {
+    createWindow();
+    mainWindow.loadFile('src/renderer/setup.html');
+  } else {
+    createWindow();
+    createOverlay();
 
-  console.log('⌨️  Global shortcut registered: Cmd+Shift+Space');
+    globalShortcut.register('CommandOrControl+Shift+Space', () => {
+      runOverlayVoicePipeline();
+    });
 
-  startWakeWordDaemon();
+    console.log('⌨️  Global shortcut registered: Cmd+Shift+Space');
+
+    startWakeWordDaemon();
+  }
 });
 
 app.on('will-quit', () => {
@@ -636,6 +799,9 @@ ipcMain.handle('execute-command', async (event, userInput) => {
     const observation = await generateObservation(userInput, contextSummary, actionsLog);
     session.lastResult = observation;
 
+    const primaryAction = (plan.actions || [])[0]?.type || 'unknown';
+    storeMemory(observation, primaryAction, true).catch((e) => console.error('Memory store error:', e.message));
+
     return { plan, results, observation, session: { openTabs: session.openTabs, activeTab: { title: session.activeTab.title, url: session.activeTab.url } } };
   } catch (err) {
     return { error: err.message, plan: { speak: 'Error: ' + err.message, actions: [], reasoning: '' }, results: [] };
@@ -644,7 +810,7 @@ ipcMain.handle('execute-command', async (event, userInput) => {
 
 ipcMain.handle('voice-listen', async () => {
   try {
-    const out = execSync('/opt/anaconda3/bin/python3 src/python/voice_engine.py listen', { timeout: 90000, maxBuffer: 5*1024*1024, encoding: 'utf-8', env: voiceEnv });
+    const out = execSync(getPythonPath() + " '" + getPythonScriptPath('voice_engine.py') + "' listen", { timeout: 90000, maxBuffer: 5*1024*1024, encoding: 'utf-8', env: voiceEnv });
     const line = out.split('\n').find(l => l.startsWith('VOICE_RESULT:'));
     if (line) return JSON.parse(line.replace('VOICE_RESULT:', ''));
     return { transcription: '', error: 'No result' };
@@ -661,4 +827,108 @@ ipcMain.handle('voice-speak', async (event, text) => {
 ipcMain.handle('take-screenshot', async () => {
   await takeScreenshot('/tmp/nova_screenshot.png');
   return '/tmp/nova_screenshot.png';
+});
+
+// ─── Setup Wizard IPC Handlers ───────────────────────────────────────────────
+
+ipcMain.handle('check-accessibility', () => {
+  try {
+    return systemPreferences.isTrustedAccessibilityClient(true);
+  } catch (e) {
+    return false;
+  }
+});
+
+ipcMain.handle('open-external', async (event, url) => {
+  try {
+    await shell.openExternal(url);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('verify-aws', async (event, credentials) => {
+  try {
+    const { BedrockRuntimeClient: BRC, InvokeModelCommand: IMC } = require('@aws-sdk/client-bedrock-runtime');
+    const testClient = new BRC({
+      region: credentials.region || 'us-east-1',
+      credentials: {
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+      },
+    });
+    const body = JSON.stringify({
+      messages: [{ role: 'user', content: [{ text: 'Hello' }] }],
+      inferenceConfig: { maxTokens: 10 },
+    });
+    await testClient.send(new IMC({
+      modelId: 'us.amazon.nova-2-lite-v1:0',
+      body,
+      contentType: 'application/json',
+      accept: 'application/json',
+    }));
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('install-deps', async () => {
+  const { spawn } = require('child_process');
+  return new Promise((resolve) => {
+    const reqPath = path.join(__dirname, 'requirements.txt');
+    const proc = spawn('pip3', ['install', '-r', reqPath, '--user', '--break-system-packages'], {
+      env: { ...process.env },
+      timeout: 300000,
+    });
+    let output = '';
+    proc.stdout.on('data', (d) => {
+      output += d.toString();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('deps-output', d.toString());
+      }
+    });
+    proc.stderr.on('data', (d) => {
+      output += d.toString();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('deps-output', d.toString());
+      }
+    });
+    proc.on('close', (code) => {
+      resolve({ success: code === 0, output, exitCode: code });
+    });
+    proc.on('error', (e) => {
+      resolve({ success: false, output, error: e.message });
+    });
+  });
+});
+
+ipcMain.handle('save-config', (event, config) => {
+  saveConfig(config);
+  applyConfigToEnv();
+  return { success: true };
+});
+
+ipcMain.handle('complete-setup', () => {
+  const config = loadConfig();
+  config.setupComplete = true;
+  config.firstLaunch = new Date().toISOString();
+  saveConfig(config);
+  applyConfigToEnv();
+
+  mainWindow.loadFile('src/renderer/index.html');
+  createOverlay();
+
+  globalShortcut.register('CommandOrControl+Shift+Space', () => {
+    runOverlayVoicePipeline();
+  });
+  console.log('⌨️  Global shortcut registered: Cmd+Shift+Space');
+  startWakeWordDaemon();
+
+  return { success: true };
+});
+
+ipcMain.handle('get-config', () => {
+  return loadConfig();
 });
