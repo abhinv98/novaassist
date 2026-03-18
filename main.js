@@ -895,10 +895,27 @@ ipcMain.handle('check-accessibility', () => {
   }
 });
 
-ipcMain.handle('check-all-permissions', () => {
+ipcMain.handle('check-all-permissions', async () => {
   try {
     const mic = systemPreferences.getMediaAccessStatus('microphone');
-    const screen = systemPreferences.getMediaAccessStatus('screen');
+
+    // Test screen recording by actually running screencapture (the tool the app uses).
+    // Electron's getMediaAccessStatus('screen') returns stale results until a full restart.
+    let screen = 'denied';
+    try {
+      const { execSync } = require('child_process');
+      const testPath = '/tmp/nova_screen_perm_test.png';
+      execSync(`screencapture -x ${testPath}`, { timeout: 5000 });
+      const fs = require('fs');
+      if (fs.existsSync(testPath)) {
+        const stat = fs.statSync(testPath);
+        screen = stat.size > 100 ? 'granted' : 'denied';
+        fs.unlinkSync(testPath);
+      }
+    } catch (e) {
+      screen = 'denied';
+    }
+
     return { microphone: mic, screen: screen };
   } catch (e) {
     return { microphone: 'not-determined', screen: 'not-determined' };
