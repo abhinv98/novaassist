@@ -752,24 +752,8 @@ function stopWakeWordDaemon() {
 // ─── App Lifecycle ───────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
-  // Reset stale Accessibility TCC entry on first launch so reinstalls get a clean grant
-  if (!isSetupComplete()) {
-    try {
-      const { execSync } = require('child_process');
-      execSync('tccutil reset Accessibility com.novaassist.app', { timeout: 5000 });
-      console.log('TCC: reset Accessibility permission for clean install');
-    } catch (e) {
-      console.log('TCC: reset skipped —', e.message);
-    }
-  }
-
   applyConfigToEnv();
   loadMemories();
-
-  // Request microphone permission from main process on every launch
-  systemPreferences.askForMediaAccess('microphone').then(granted => {
-    console.log('Microphone permission:', granted ? 'granted' : 'denied');
-  }).catch(() => {});
 
   if (!isSetupComplete()) {
     createWindow();
@@ -889,6 +873,16 @@ ipcMain.handle('take-screenshot', async () => {
 
 ipcMain.handle('check-accessibility', () => {
   try {
+    // false = passive check only, no system prompt. Safe for polling.
+    return systemPreferences.isTrustedAccessibilityClient(false);
+  } catch (e) {
+    return false;
+  }
+});
+
+ipcMain.handle('request-accessibility', () => {
+  try {
+    // true = show the system prompt if not trusted (only call on user action)
     return systemPreferences.isTrustedAccessibilityClient(true);
   } catch (e) {
     return false;

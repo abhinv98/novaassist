@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('novaAssist', {
   takeScreenshot: () => ipcRenderer.invoke('take-screenshot'),
   onOverlayUpdate: (cb) => ipcRenderer.on('overlay-update', (_e, data) => cb(data)),
   checkAccessibility: () => ipcRenderer.invoke('check-accessibility'),
+  requestAccessibility: () => ipcRenderer.invoke('request-accessibility'),
   checkAllPermissions: () => ipcRenderer.invoke('check-all-permissions'),
   requestScreenRecording: () => ipcRenderer.invoke('request-screen-recording'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
