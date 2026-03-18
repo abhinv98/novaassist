@@ -898,26 +898,7 @@ ipcMain.handle('check-accessibility', () => {
 ipcMain.handle('check-all-permissions', async () => {
   try {
     const mic = systemPreferences.getMediaAccessStatus('microphone');
-
-    let screen = systemPreferences.getMediaAccessStatus('screen');
-
-    // On macOS 15+/26, getMediaAccessStatus('screen') can return stale results
-    // after the user toggles the permission in System Settings without an app restart.
-    // desktopCapturer.getSources() uses ScreenCaptureKit internally, which performs
-    // a live TCC check and reflects the current permission state immediately.
-    if (screen !== 'granted') {
-      try {
-        const { desktopCapturer } = require('electron');
-        const sources = await desktopCapturer.getSources({
-          types: ['screen'],
-          thumbnailSize: { width: 1, height: 1 },
-        });
-        if (sources.length > 0) {
-          screen = 'granted';
-        }
-      } catch (_) {}
-    }
-
+    const screen = systemPreferences.getMediaAccessStatus('screen');
     return { microphone: mic, screen: screen };
   } catch (e) {
     return { microphone: 'not-determined', screen: 'not-determined' };
@@ -1076,6 +1057,18 @@ ipcMain.handle('save-config', (event, config) => {
   saveConfig(config);
   applyConfigToEnv();
   return { success: true };
+});
+
+ipcMain.handle('save-setup-step', (event, step) => {
+  const config = loadConfig();
+  config.lastSetupStep = step;
+  saveConfig(config);
+  return { success: true };
+});
+
+ipcMain.handle('restart-app', () => {
+  app.relaunch();
+  app.quit();
 });
 
 ipcMain.handle('complete-setup', () => {

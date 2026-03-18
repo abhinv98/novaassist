@@ -106,6 +106,7 @@ function PermissionsStep({ onNext }) {
   const [accessibility, setAccessibility] = useState(null);
   const [microphone, setMicrophone] = useState(null);
   const [screenRec, setScreenRec] = useState(null);
+  const [screenSettingsOpened, setScreenSettingsOpened] = useState(false);
 
   const checkAll = useCallback(async () => {
     const ax = await window.novaAssist.checkAccessibility();
@@ -117,11 +118,20 @@ function PermissionsStep({ onNext }) {
 
   useEffect(() => { checkAll(); }, [checkAll]);
 
-  // Re-check every 2 seconds so it picks up the change after user toggles in System Settings
+  // Poll accessibility and microphone every 2 seconds (these update live).
+  // Screen recording is NOT polled — macOS requires an app restart for it to
+  // take effect, so polling would just return stale "denied" values.
   useEffect(() => {
-    const interval = setInterval(checkAll, 2000);
+    const interval = setInterval(async () => {
+      const ax = await window.novaAssist.checkAccessibility();
+      setAccessibility(ax);
+      const perms = await window.novaAssist.checkAllPermissions();
+      setMicrophone(perms.microphone);
+      // Only update screen if it changed to granted (avoid stale "denied" overwriting restart-pending state)
+      if (perms.screen === 'granted') setScreenRec('granted');
+    }, 2000);
     return () => clearInterval(interval);
-  }, [checkAll]);
+  }, []);
 
   const requestMic = useCallback(async () => {
     try {
@@ -133,38 +143,18 @@ function PermissionsStep({ onNext }) {
     }
   }, []);
 
-  const requestScreen = useCallback(async () => {
-    await window.novaAssist.requestScreenRecording();
-    setTimeout(checkAll, 1000);
-  }, [checkAll]);
+  const openScreenSettings = useCallback(() => {
+    window.novaAssist.requestScreenRecording();
+    setScreenSettingsOpened(true);
+  }, []);
+
+  const restartApp = useCallback(() => {
+    window.novaAssist.saveSetupStep(1);
+    window.novaAssist.restartApp();
+  }, []);
 
   const allGranted = accessibility === true && microphone === 'granted' && screenRec === 'granted';
-
-  function PermRow({ label, description, status, onRequest, onOpen, openLabel }) {
-    const granted = status === true || status === 'granted';
-    return (
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'14px 16px',backgroundColor:'#0a0a0a',border:'1px solid #1a1a1a',borderRadius:'10px',marginBottom:'10px'}}>
-        <div style={{flex:1}}>
-          <div style={{fontSize:'14px',fontWeight:500,marginBottom:'2px'}}>{label}</div>
-          <div style={{fontSize:'12px',color:'#666'}}>{description}</div>
-        </div>
-        <div style={{display:'flex',alignItems:'center',gap:'10px',marginLeft:'16px'}}>
-          {granted ? (
-            <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Granted</span>
-          ) : (
-            <>
-              {onRequest && <Btn onClick={onRequest} small>Grant</Btn>}
-              {onOpen && <Btn onClick={onOpen} small>{openLabel || 'Open Settings'}</Btn>}
-              {status === 'denied' && <span style={{fontSize:'12px',color:'#ff4444'}}>Denied</span>}
-              {status === null && <span style={{fontSize:'12px',color:'#888'}}>Not checked</span>}
-              {status === false && <span style={{fontSize:'12px',color:'#ff9900'}}>Not granted</span>}
-              {status === 'not-determined' && <span style={{fontSize:'12px',color:'#ff9900'}}>Not yet</span>}
-            </>
-          )}
-        </div>
-      </div>
-    );
-  }
+  const screenNeedsRestart = screenRec !== 'granted' && screenSettingsOpened;
 
   return (
     <div style={{animation:'fadeIn 400ms ease'}}>
@@ -173,25 +163,74 @@ function PermissionsStep({ onNext }) {
         NovaAssist needs three macOS permissions to work. Grant each one below.
       </p>
 
-      <PermRow
-        label="Accessibility"
-        description="Detect UI elements and control mouse/keyboard"
-        status={accessibility}
-        onOpen={()=>window.novaAssist.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')}
-      />
-      <PermRow
-        label="Microphone"
-        description="Hear your voice commands"
-        status={microphone}
-        onRequest={requestMic}
-      />
-      <PermRow
-        label="Screen Recording"
-        description="Capture screenshots for AI screen analysis"
-        status={screenRec}
-        onRequest={requestScreen}
-        onOpen={()=>window.novaAssist.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')}
-      />
+      {/* Accessibility */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'14px 16px',backgroundColor:'#0a0a0a',border:'1px solid #1a1a1a',borderRadius:'10px',marginBottom:'10px'}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:'14px',fontWeight:500,marginBottom:'2px'}}>Accessibility</div>
+          <div style={{fontSize:'12px',color:'#666'}}>Detect UI elements and control mouse/keyboard</div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:'10px',marginLeft:'16px'}}>
+          {accessibility === true ? (
+            <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Granted</span>
+          ) : (
+            <>
+              <Btn onClick={()=>window.novaAssist.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')} small>Open Settings</Btn>
+              <span style={{fontSize:'12px',color: accessibility === false ? '#ff9900' : '#ff4444'}}>{accessibility === null ? 'Checking...' : 'Not granted'}</span>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Microphone */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'14px 16px',backgroundColor:'#0a0a0a',border:'1px solid #1a1a1a',borderRadius:'10px',marginBottom:'10px'}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:'14px',fontWeight:500,marginBottom:'2px'}}>Microphone</div>
+          <div style={{fontSize:'12px',color:'#666'}}>Hear your voice commands</div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:'10px',marginLeft:'16px'}}>
+          {microphone === 'granted' ? (
+            <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Granted</span>
+          ) : (
+            <>
+              <Btn onClick={requestMic} small>Grant</Btn>
+              <span style={{fontSize:'12px',color:'#ff4444'}}>{microphone === null ? 'Checking...' : 'Not granted'}</span>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Screen Recording */}
+      <div style={{padding:'14px 16px',backgroundColor:'#0a0a0a',border: screenNeedsRestart ? '1px solid #ff990040' : '1px solid #1a1a1a',borderRadius:'10px',marginBottom:'10px'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:'14px',fontWeight:500,marginBottom:'2px'}}>Screen Recording</div>
+            <div style={{fontSize:'12px',color:'#666'}}>Capture screenshots for AI screen analysis</div>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:'10px',marginLeft:'16px'}}>
+            {screenRec === 'granted' ? (
+              <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Granted</span>
+            ) : (
+              <>
+                <Btn onClick={openScreenSettings} small>Open Settings</Btn>
+                {screenNeedsRestart ? (
+                  <span style={{fontSize:'12px',color:'#ff9900'}}>Restart needed</span>
+                ) : (
+                  <span style={{fontSize:'12px',color:'#ff4444'}}>{screenRec === null ? 'Checking...' : 'Not granted'}</span>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+        {screenNeedsRestart && (
+          <div style={{marginTop:'12px',padding:'10px 12px',backgroundColor:'#ff990010',borderRadius:'8px'}}>
+            <p style={{fontSize:'12px',color:'#cc8800',lineHeight:1.6,marginBottom:'10px'}}>
+              After enabling Screen Recording in System Settings, macOS requires an app restart for the permission to take effect.
+              Toggle NovaAssist on in the list, then click "Restart App" below.
+            </p>
+            <Btn onClick={restartApp} primary>Restart App</Btn>
+          </div>
+        )}
+      </div>
 
       <div style={{display:'flex',gap:'12px',alignItems:'center',marginTop:'20px'}}>
         <Btn onClick={checkAll} small>Re-check All</Btn>
@@ -201,7 +240,7 @@ function PermissionsStep({ onNext }) {
       <div style={{marginTop:'20px'}}>
         <Btn primary onClick={onNext}>{allGranted ? 'Next' : 'Next (some permissions missing)'}</Btn>
       </div>
-      {!allGranted && (
+      {!allGranted && !screenNeedsRestart && (
         <p style={{fontSize:'11px',color:'#555',marginTop:'8px'}}>
           You can continue without all permissions, but some features may not work.
         </p>
@@ -440,12 +479,22 @@ function SetupWizard() {
         const existing = await window.novaAssist.getConfig();
         if (existing && Object.keys(existing).length > 0) {
           setConfig(prev => ({ ...prev, ...existing }));
+          // Resume from saved step (e.g. after restart for screen recording permission)
+          if (typeof existing.lastSetupStep === 'number' && existing.lastSetupStep > 0) {
+            setStep(existing.lastSetupStep);
+          }
         }
       }
     })();
   }, []);
 
-  const next = () => setStep(s => Math.min(s + 1, totalSteps - 1));
+  const next = () => {
+    const nextStep = Math.min(step + 1, totalSteps - 1);
+    setStep(nextStep);
+    if (window.novaAssist?.saveSetupStep) {
+      window.novaAssist.saveSetupStep(nextStep);
+    }
+  };
 
   return (
     <div style={{

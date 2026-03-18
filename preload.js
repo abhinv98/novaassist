@@ -15,5 +15,7 @@ contextBridge.exposeInMainWorld('novaAssist', {
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   completeSetup: () => ipcRenderer.invoke('complete-setup'),
   getConfig: () => ipcRenderer.invoke('get-config'),
+  saveSetupStep: (step) => ipcRenderer.invoke('save-setup-step', step),
+  restartApp: () => ipcRenderer.invoke('restart-app'),
   onDepsOutput: (cb) => ipcRenderer.on('deps-output', (_e, data) => cb(data)),
 });
