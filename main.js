@@ -899,21 +899,44 @@ ipcMain.handle('check-all-permissions', async () => {
   try {
     const mic = systemPreferences.getMediaAccessStatus('microphone');
 
-    // Test screen recording by actually running screencapture (the tool the app uses).
-    // Electron's getMediaAccessStatus('screen') returns stale results until a full restart.
+    // macOS screen recording permission APIs (getMediaAccessStatus, CGPreflightScreenCaptureAccess)
+    // return stale results until a full app restart -- even after the user grants it in System Settings.
+    // Strategy: try multiple methods, trust the first one that says granted.
     let screen = 'denied';
-    try {
-      const { execSync } = require('child_process');
-      const testPath = '/tmp/nova_screen_perm_test.png';
-      execSync(`screencapture -x ${testPath}`, { timeout: 5000 });
-      const fs = require('fs');
-      if (fs.existsSync(testPath)) {
-        const stat = fs.statSync(testPath);
-        screen = stat.size > 100 ? 'granted' : 'denied';
-        fs.unlinkSync(testPath);
-      }
-    } catch (e) {
-      screen = 'denied';
+
+    // Method 1: Electron API (works after restart)
+    const electronStatus = systemPreferences.getMediaAccessStatus('screen');
+    if (electronStatus === 'granted') {
+      screen = 'granted';
+    }
+
+    // Method 2: test screencapture binary (works immediately if system-level permission is granted)
+    if (screen !== 'granted') {
+      try {
+        const { execSync } = require('child_process');
+        const testPath = '/tmp/nova_screen_perm_test.png';
+        execSync(`screencapture -x ${testPath}`, { timeout: 5000, stdio: 'pipe' });
+        const fs = require('fs');
+        if (fs.existsSync(testPath)) {
+          const stat = fs.statSync(testPath);
+          if (stat.size > 500) screen = 'granted';
+          try { fs.unlinkSync(testPath); } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    // Method 3: check if the user has toggled NovaAssist ON in the TCC list
+    // by looking for our bundle ID in the screen capture consent list
+    if (screen !== 'granted') {
+      try {
+        const { execSync } = require('child_process');
+        const out = execSync(
+          'sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" ' +
+          '"SELECT auth_value FROM access WHERE service=\'kTCCServiceScreenCapture\' AND client=\'com.novaassist.app\'" 2>/dev/null',
+          { timeout: 3000, encoding: 'utf-8', stdio: 'pipe' }
+        ).trim();
+        if (out === '2') screen = 'granted';
+      } catch (_) {}
     }
 
     return { microphone: mic, screen: screen };

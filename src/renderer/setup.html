@@ -106,6 +106,7 @@ function PermissionsStep({ onNext }) {
   const [accessibility, setAccessibility] = useState(null);
   const [microphone, setMicrophone] = useState(null);
   const [screenRec, setScreenRec] = useState(null);
+  const [screenAttempted, setScreenAttempted] = useState(false);
 
   const checkAll = useCallback(async () => {
     const ax = await window.novaAssist.checkAccessibility();
@@ -129,13 +130,22 @@ function PermissionsStep({ onNext }) {
 
   const requestScreen = useCallback(async () => {
     await window.novaAssist.requestScreenRecording();
+    setScreenAttempted(true);
     setTimeout(checkAll, 2000);
   }, [checkAll]);
 
-  const allGranted = accessibility === true && microphone === 'granted' && screenRec === 'granted';
+  const openScreenSettings = useCallback(() => {
+    window.novaAssist.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+    setScreenAttempted(true);
+    setTimeout(checkAll, 4000);
+  }, [checkAll]);
+
+  const screenEffective = screenRec === 'granted' || screenAttempted;
+  const allGranted = accessibility === true && microphone === 'granted' && screenEffective;
 
   function PermRow({ label, description, status, onRequest, onOpen, openLabel }) {
     const granted = status === true || status === 'granted';
+    const attempted = status === 'attempted';
     return (
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'14px 16px',backgroundColor:'#0a0a0a',border:'1px solid #1a1a1a',borderRadius:'10px',marginBottom:'10px'}}>
         <div style={{flex:1}}>
@@ -145,6 +155,8 @@ function PermissionsStep({ onNext }) {
         <div style={{display:'flex',alignItems:'center',gap:'10px',marginLeft:'16px'}}>
           {granted ? (
             <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> Granted</span>
+          ) : attempted ? (
+            <span style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#00cc88'}}><CheckIcon/> OK</span>
           ) : (
             <>
               {onRequest && <Btn onClick={onRequest} small>Grant</Btn>}
@@ -181,10 +193,10 @@ function PermissionsStep({ onNext }) {
       />
       <PermRow
         label="Screen Recording"
-        description="Capture screenshots for AI screen analysis"
-        status={screenRec}
+        description={screenAttempted && screenRec !== 'granted' ? "Toggle NovaAssist ON in System Settings, then continue" : "Capture screenshots for AI screen analysis"}
+        status={screenAttempted && screenRec !== 'granted' ? 'attempted' : screenRec}
         onRequest={requestScreen}
-        onOpen={()=>window.novaAssist.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')}
+        onOpen={openScreenSettings}
       />
 
       <div style={{display:'flex',gap:'12px',alignItems:'center',marginTop:'20px'}}>
@@ -195,7 +207,7 @@ function PermissionsStep({ onNext }) {
       <div style={{marginTop:'20px'}}>
         <Btn primary onClick={onNext}>{allGranted ? 'Next' : 'Next (some permissions missing)'}</Btn>
       </div>
-      {!allGranted && (
+      {!allGranted && !screenAttempted && (
         <p style={{fontSize:'11px',color:'#555',marginTop:'8px'}}>
           You can continue without all permissions, but some features may not work.
         </p>
