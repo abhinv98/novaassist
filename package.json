@@ -1,6 +1,6 @@
 {
   "name": "nova-assist",
-  "version": "1.0.11",
+  "version": "1.1.0",
   "description": "Voice-first AI desktop agent for macOS",
   "main": "main.js",
   "scripts": {
@@ -88,8 +88,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1009.0",
-    "dotenv": "^17.3.1",
-    "mac-screen-capture-permissions": "^2.1.0"
+    "dotenv": "^17.3.1"
   },
   "devDependencies": {
     "electron": "^41.0.2",

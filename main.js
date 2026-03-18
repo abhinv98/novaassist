@@ -899,15 +899,23 @@ ipcMain.handle('check-all-permissions', async () => {
   try {
     const mic = systemPreferences.getMediaAccessStatus('microphone');
 
-    // Use mac-screen-capture-permissions which calls CGWindowListCreateImage under the hood.
-    // Unlike Electron's getMediaAccessStatus('screen'), this detects the permission
-    // immediately after the user toggles it in System Settings -- no restart needed.
-    let screen = 'denied';
-    try {
-      const { hasScreenCapturePermission } = require('mac-screen-capture-permissions');
-      screen = hasScreenCapturePermission() ? 'granted' : 'denied';
-    } catch (_) {
-      screen = systemPreferences.getMediaAccessStatus('screen');
+    let screen = systemPreferences.getMediaAccessStatus('screen');
+
+    // On macOS 15+/26, getMediaAccessStatus('screen') can return stale results
+    // after the user toggles the permission in System Settings without an app restart.
+    // desktopCapturer.getSources() uses ScreenCaptureKit internally, which performs
+    // a live TCC check and reflects the current permission state immediately.
+    if (screen !== 'granted') {
+      try {
+        const { desktopCapturer } = require('electron');
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 1, height: 1 },
+        });
+        if (sources.length > 0) {
+          screen = 'granted';
+        }
+      } catch (_) {}
     }
 
     return { microphone: mic, screen: screen };
@@ -918,9 +926,11 @@ ipcMain.handle('check-all-permissions', async () => {
 
 ipcMain.handle('request-screen-recording', async () => {
   try {
-    const { hasScreenCapturePermission } = require('mac-screen-capture-permissions');
-    const granted = hasScreenCapturePermission();
-    return { success: granted };
+    // On macOS 15+/26, programmatic permission prompts for screen recording are unreliable.
+    // The most reliable path: open System Settings directly to the Screen Recording pane
+    // so the user can toggle the permission themselves.
+    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+    return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
   }
