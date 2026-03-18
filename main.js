@@ -899,44 +899,15 @@ ipcMain.handle('check-all-permissions', async () => {
   try {
     const mic = systemPreferences.getMediaAccessStatus('microphone');
 
-    // macOS screen recording permission APIs (getMediaAccessStatus, CGPreflightScreenCaptureAccess)
-    // return stale results until a full app restart -- even after the user grants it in System Settings.
-    // Strategy: try multiple methods, trust the first one that says granted.
+    // Use mac-screen-capture-permissions which calls CGWindowListCreateImage under the hood.
+    // Unlike Electron's getMediaAccessStatus('screen'), this detects the permission
+    // immediately after the user toggles it in System Settings -- no restart needed.
     let screen = 'denied';
-
-    // Method 1: Electron API (works after restart)
-    const electronStatus = systemPreferences.getMediaAccessStatus('screen');
-    if (electronStatus === 'granted') {
-      screen = 'granted';
-    }
-
-    // Method 2: test screencapture binary (works immediately if system-level permission is granted)
-    if (screen !== 'granted') {
-      try {
-        const { execSync } = require('child_process');
-        const testPath = '/tmp/nova_screen_perm_test.png';
-        execSync(`screencapture -x ${testPath}`, { timeout: 5000, stdio: 'pipe' });
-        const fs = require('fs');
-        if (fs.existsSync(testPath)) {
-          const stat = fs.statSync(testPath);
-          if (stat.size > 500) screen = 'granted';
-          try { fs.unlinkSync(testPath); } catch (_) {}
-        }
-      } catch (_) {}
-    }
-
-    // Method 3: check if the user has toggled NovaAssist ON in the TCC list
-    // by looking for our bundle ID in the screen capture consent list
-    if (screen !== 'granted') {
-      try {
-        const { execSync } = require('child_process');
-        const out = execSync(
-          'sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" ' +
-          '"SELECT auth_value FROM access WHERE service=\'kTCCServiceScreenCapture\' AND client=\'com.novaassist.app\'" 2>/dev/null',
-          { timeout: 3000, encoding: 'utf-8', stdio: 'pipe' }
-        ).trim();
-        if (out === '2') screen = 'granted';
-      } catch (_) {}
+    try {
+      const { hasScreenCapturePermission } = require('mac-screen-capture-permissions');
+      screen = hasScreenCapturePermission() ? 'granted' : 'denied';
+    } catch (_) {
+      screen = systemPreferences.getMediaAccessStatus('screen');
     }
 
     return { microphone: mic, screen: screen };
@@ -947,9 +918,9 @@ ipcMain.handle('check-all-permissions', async () => {
 
 ipcMain.handle('request-screen-recording', async () => {
   try {
-    const { desktopCapturer } = require('electron');
-    await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } });
-    return { success: true };
+    const { hasScreenCapturePermission } = require('mac-screen-capture-permissions');
+    const granted = hasScreenCapturePermission();
+    return { success: granted };
   } catch (e) {
     return { success: false, error: e.message };
   }

@@ -1,6 +1,6 @@
 {
   "name": "nova-assist",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Voice-first AI desktop agent for macOS",
   "main": "main.js",
   "scripts": {
@@ -8,7 +8,14 @@
     "build:mac": "electron-builder --mac",
     "publish": "electron-builder --mac --publish always"
   },
-  "keywords": ["voice", "ai", "desktop-agent", "macos", "accessibility", "amazon-nova"],
+  "keywords": [
+    "voice",
+    "ai",
+    "desktop-agent",
+    "macos",
+    "accessibility",
+    "amazon-nova"
+  ],
   "author": "Abhinav Rai",
   "license": "MIT",
   "type": "commonjs",
@@ -20,7 +27,9 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         }
       ],
       "icon": "build/icon.icns",
@@ -37,8 +46,16 @@
     "dmg": {
       "title": "NovaAssist",
       "contents": [
-        { "x": 130, "y": 220 },
-        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "files": [
@@ -54,7 +71,9 @@
       {
         "from": "src/python",
         "to": "python",
-        "filter": ["**/*.py"]
+        "filter": [
+          "**/*.py"
+        ]
       },
       {
         "from": "requirements.txt",
@@ -69,7 +88,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1009.0",
-    "dotenv": "^17.3.1"
+    "dotenv": "^17.3.1",
+    "mac-screen-capture-permissions": "^2.1.0"
   },
   "devDependencies": {
     "electron": "^41.0.2",
