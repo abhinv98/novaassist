@@ -9,10 +9,20 @@ Usage:
 Environment variable alternative:
   PICOVOICE_ACCESS_KEY=YOUR_KEY python3 wake_word.py
 """
-import sys, os, argparse, struct, time
+import sys, os, argparse, struct, time, signal
 
 import pvporcupine
 import pyaudio
+
+shutdown_requested = False
+
+def _handle_sigterm(signum, frame):
+    global shutdown_requested
+    shutdown_requested = True
+
+signal.signal(signal.SIGTERM, _handle_sigterm)
+signal.signal(signal.SIGINT, _handle_sigterm)
+
 
 def main():
     parser = argparse.ArgumentParser(description="NovaAssist Wake Word Daemon")
@@ -59,7 +69,7 @@ def main():
     print(f"WAKE_WORD_READY:Listening for '{keyword}' (sensitivity={args.sensitivity})", flush=True)
 
     try:
-        while True:
+        while not shutdown_requested:
             pcm = audio_stream.read(porcupine.frame_length, exception_on_overflow=False)
             pcm_unpacked = struct.unpack_from("h" * porcupine.frame_length, pcm)
 
@@ -70,7 +80,7 @@ def main():
 
                 audio_stream.stop_stream()
                 try:
-                    while True:
+                    while not shutdown_requested:
                         line = sys.stdin.readline().strip()
                         if line == "RESUME":
                             audio_stream.start_stream()

@@ -9,3 +9,5 @@ pyobjc-framework-Quartz
 pyobjc-framework-ApplicationServices
 pyobjc-framework-Cocoa
 SpeechRecognition
+silero-vad
+torch

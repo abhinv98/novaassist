@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, globalShortcut, screen, systemPreferences, 
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { classifyIntent, analyzeScreenshot, generateObservation, describeScreen, summarizeDocument, validateBedrockAccess } = require('./src/main/brain');
+const { classifyIntent, analyzeScreenshot, generateObservation, observeScreen, describeScreen, summarizeDocument, validateBedrockAccess } = require('./src/main/brain');
 const {
   executeCommand, takeScreenshot, openChromeWithProfile, findChromeProfile,
   getChromeTabs, getActiveTabInfo, closeTab, switchToTab, newTab,
@@ -12,7 +12,7 @@ const {
   revealInFinder, openInFinder, getRunningApps,
   runScreenAgent, runDescribeScreen, runNotificationAgent,
 } = require('./src/main/desktop-hands');
-const { execSync } = require('child_process');
+const { execSync, spawn: spawnChild } = require('child_process');
 const { loadMemories, storeMemory, recallMemories, formatMemoriesForContext } = require('./src/main/memory');
 
 // ─── Config Management ───────────────────────────────────────────────────────
@@ -134,6 +134,16 @@ function quickAck(text) {
   }
 }
 
+function quickAckAsync(text) {
+  try {
+    const escaped = text.replace(/"/g, '\\"');
+    const proc = spawnChild('say', ['-v', 'Samantha', '-r', '210', escaped]);
+    proc.on('error', (e) => console.error('quickAckAsync error:', e.message));
+  } catch (e) {
+    console.error('quickAckAsync error:', e.message);
+  }
+}
+
 function speakAndWait(text) {
   try {
     let toSpeak = text;
@@ -145,6 +155,24 @@ function speakAndWait(text) {
   } catch (e) {
     console.error('speakAndWait error:', e.message);
   }
+}
+
+function speakAndWaitAsync(text) {
+  return new Promise((resolve) => {
+    try {
+      let toSpeak = text;
+      if (toSpeak.length > 500) {
+        toSpeak = toSpeak.substring(0, 500) + '... and more.';
+      }
+      const escaped = toSpeak.replace(/"/g, '\\"').replace(/`/g, '').replace(/\$/g, '');
+      const proc = spawnChild('say', ['-v', 'Samantha', '-r', '185', escaped]);
+      proc.on('close', () => resolve());
+      proc.on('error', () => resolve());
+    } catch (e) {
+      console.error('speakAndWaitAsync error:', e.message);
+      resolve();
+    }
+  });
 }
 
 // ─── Notes Manifest Parser ───────────────────────────────────────────────────
@@ -554,14 +582,16 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
     const text = voiceResult.transcription.trim();
     console.log('📝  Overlay heard:', text);
 
-    // Instant acknowledgment — user hears "On it" immediately while brain thinks
     sendOverlayUpdate({ state: 'thinking', status: 'Got it — thinking...', transcript: text });
-    quickAck('On it');
-
-    await updateSessionContext();
     session.lastCommand = text;
 
-    const recalled = await recallMemories(text).catch(() => []);
+    // Parallelize: ack + context + memory fetch
+    const [, , recalled] = await Promise.all([
+      Promise.resolve(quickAckAsync('On it')),
+      updateSessionContext(),
+      recallMemories(text).catch(() => []),
+    ]);
+
     const memoryContext = formatMemoriesForContext(recalled);
     if (memoryContext) {
       session.memoryContext = memoryContext;
@@ -572,7 +602,6 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
 
     if (!overlayBusy) return;
 
-    // Announce what we're about to do
     if (plan.speak) {
       sendOverlayUpdate({ state: 'thinking', status: plan.speak, transcript: '' });
     }
@@ -581,35 +610,14 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
 
     if (!overlayBusy) return;
 
-    // Phase 3: Observe — use screenshot analysis if available, otherwise generate observation
+    // Always-screenshot observe: capture what's on screen after actions settle
     sendOverlayUpdate({ state: 'thinking', status: 'Observing...', transcript: '' });
 
-    const screenshotResult = results.find(r => r.screenshot && r.description);
-    let observation;
-
-    if (screenshotResult) {
-      // A screenshot was taken and analyzed — use that as the observation directly
-      observation = screenshotResult.description;
-    } else {
-      const chromeActionTypes = new Set(['chrome_tab', 'chrome_newtab', 'chrome_profile', 'chrome_read', 'chrome_js', 'chrome_close_tab', 'chrome_switch_tab', 'browser_action']);
-      const involvesChromeActions = (plan.actions || []).some(a => chromeActionTypes.has(a.type));
-
-      if (involvesChromeActions) {
-        await updateSessionContext();
-      }
-
-      const runningApps = await getRunningApps();
-      const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
-
-      let contextSummary;
-      if (involvesChromeActions) {
-        contextSummary = `Active tab: ${session.activeTab.title} — ${session.activeTab.url}\nOpen tabs: ${session.openTabs.map(t => t.title).join(', ')}\nRunning apps: ${runningApps.slice(0, 15).join(', ')}\nPage content: ${session.activeTab.content.substring(0, 1000)}`;
-      } else {
-        contextSummary = `Running apps: ${runningApps.slice(0, 15).join(', ')}\nNote: No Chrome actions were performed — do NOT describe Chrome state.`;
-      }
-
-      observation = await generateObservation(text, contextSummary, actionsLog);
-    }
+    await new Promise(r => setTimeout(r, 1000));
+    const obsScreenshot = '/tmp/nova_observe.png';
+    await takeScreenshot(obsScreenshot);
+    const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
+    const observation = await observeScreen(obsScreenshot, text, actionsLog);
 
     session.lastResult = observation;
     console.log('👁️  Observation:', observation);
@@ -620,10 +628,8 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
     const displayObs = observation.length > 120 ? observation.slice(0, 120) + '…' : observation;
     sendOverlayUpdate({ state: 'done', status: displayObs, transcript: '' });
 
-    // Speak the observation and WAIT for it to finish (no arbitrary timeout)
-    speakAndWait(observation);
+    await speakAndWaitAsync(observation);
 
-    // Brief pause so the user can read the overlay after speech ends
     await new Promise(r => setTimeout(r, 1500));
   } catch (err) {
     console.error('Overlay pipeline error:', err);
@@ -635,13 +641,107 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
   }
 }
 
+// ─── Voice Engine Daemon ─────────────────────────────────────────────────────
+
+let voiceEngineProcess = null;
+let voiceEngineReady = false;
+let voiceEngineRestartAttempts = 0;
+let pendingVoiceResolve = null;
+let voiceStdoutBuffer = '';
+
+function startVoiceEngineDaemon() {
+  voiceEngineReady = false;
+  voiceStdoutBuffer = '';
+
+  voiceEngineProcess = spawnChild(getPythonPath(), [
+    getPythonScriptPath('voice_engine.py'), 'daemon',
+  ], {
+    env: getVoiceEnv(),
+  });
+
+  voiceEngineProcess.stdout.on('data', (data) => {
+    voiceStdoutBuffer += data.toString();
+    const lines = voiceStdoutBuffer.split('\n');
+    voiceStdoutBuffer = lines.pop();
+    for (const line of lines) {
+      if (line === 'VOICE_DAEMON_READY') {
+        voiceEngineReady = true;
+        voiceEngineRestartAttempts = 0;
+        console.log('🎤 Voice engine daemon ready');
+      } else if (line.startsWith('VOICE_RESULT:')) {
+        if (pendingVoiceResolve) {
+          try {
+            const result = JSON.parse(line.replace('VOICE_RESULT:', ''));
+            console.log('🎤 Voice result:', JSON.stringify(result));
+            pendingVoiceResolve(result);
+          } catch (e) {
+            pendingVoiceResolve({ transcription: '', error: 'Parse error' });
+          }
+          pendingVoiceResolve = null;
+        }
+      }
+    }
+  });
+
+  voiceEngineProcess.stderr.on('data', (d) => {
+    console.log('🎤 Voice engine:', d.toString().trim());
+  });
+
+  voiceEngineProcess.on('close', (code) => {
+    console.log(`🎤 Voice engine daemon exited with code ${code}`);
+    voiceEngineProcess = null;
+    voiceEngineReady = false;
+    if (pendingVoiceResolve) {
+      pendingVoiceResolve({ transcription: '', error: 'Voice engine crashed' });
+      pendingVoiceResolve = null;
+    }
+    if (voiceEngineRestartAttempts < 5) {
+      const delay = Math.min(1000 * Math.pow(2, voiceEngineRestartAttempts), 30000);
+      voiceEngineRestartAttempts++;
+      console.log(`🎤 Restarting voice engine daemon in ${delay}ms (attempt ${voiceEngineRestartAttempts})`);
+      setTimeout(() => startVoiceEngineDaemon(), delay);
+    }
+  });
+
+  voiceEngineProcess.on('error', (err) => {
+    console.error('🎤 Voice engine daemon spawn error:', err.message);
+    voiceEngineProcess = null;
+  });
+}
+
+function stopVoiceEngineDaemon() {
+  if (voiceEngineProcess && !voiceEngineProcess.killed) {
+    voiceEngineProcess.stdin.write('QUIT\n');
+    setTimeout(() => {
+      if (voiceEngineProcess && !voiceEngineProcess.killed) {
+        voiceEngineProcess.kill('SIGTERM');
+      }
+    }, 2000);
+  }
+}
+
 function listenForVoice(mode = 'listen') {
+  if (voiceEngineProcess && voiceEngineReady) {
+    return new Promise((resolve) => {
+      pendingVoiceResolve = resolve;
+      const cmd = mode === 'listen_smart' ? 'LISTEN_SMART 15 1.5' : 'LISTEN';
+      voiceEngineProcess.stdin.write(cmd + '\n');
+      setTimeout(() => {
+        if (pendingVoiceResolve === resolve) {
+          pendingVoiceResolve = null;
+          resolve({ transcription: '', error: 'Voice engine timeout' });
+        }
+      }, 90000);
+    });
+  }
+
+  // Fallback: spawn a one-shot process if daemon isn't available
   const { spawn } = require('child_process');
   const args = mode === 'listen_smart'
-    ? ['src/python/voice_engine.py', 'listen_smart', '15', '3']
-    : ['src/python/voice_engine.py', 'listen'];
+    ? [getPythonScriptPath('voice_engine.py'), 'listen_smart', '15', '1.5']
+    : [getPythonScriptPath('voice_engine.py'), 'listen'];
   return new Promise((resolve) => {
-    const proc = spawn(getPythonPath(), args.map(a => a === 'src/python/voice_engine.py' ? getPythonScriptPath('voice_engine.py') : a), {
+    const proc = spawn(getPythonPath(), args, {
       env: getVoiceEnv(),
       timeout: 90000,
     });
@@ -649,19 +749,14 @@ function listenForVoice(mode = 'listen') {
     let stderr = '';
     proc.stdout.on('data', (d) => { stdout += d.toString(); });
     proc.stderr.on('data', (d) => {
-      const chunk = d.toString();
-      stderr += chunk;
-      console.log('🎤 Voice engine:', chunk.trim());
+      stderr += d.toString();
+      console.log('🎤 Voice engine:', d.toString().trim());
     });
     proc.on('close', (code) => {
-      console.log(`🎤 Voice engine exited code=${code}, stdout=${stdout.length}b, stderr=${stderr.length}b`);
-      if (stderr) console.log('🎤 Voice stderr:', stderr.trim());
       const line = stdout.split('\n').find(l => l.startsWith('VOICE_RESULT:'));
       if (line) {
         try {
-          const result = JSON.parse(line.replace('VOICE_RESULT:', ''));
-          console.log('🎤 Voice result:', JSON.stringify(result));
-          resolve(result);
+          resolve(JSON.parse(line.replace('VOICE_RESULT:', '')));
         } catch (e) {
           resolve({ transcription: '', error: 'Parse error' });
         }
@@ -677,6 +772,8 @@ function listenForVoice(mode = 'listen') {
 
 // ─── Wake Word Daemon ────────────────────────────────────────────────────────
 
+let wakeWordRestartAttempts = 0;
+
 function startWakeWordDaemon() {
   const accessKey = process.env.PICOVOICE_ACCESS_KEY || '';
   if (!accessKey) {
@@ -684,10 +781,9 @@ function startWakeWordDaemon() {
     return;
   }
 
-  const { spawn } = require('child_process');
   const keyword = process.env.WAKE_WORD || 'jarvis';
 
-  wakeWordProcess = spawn(getPythonPath(), [
+  wakeWordProcess = spawnChild(getPythonPath(), [
     getPythonScriptPath('wake_word.py'),
     '--access-key', accessKey,
     '--keyword', keyword,
@@ -695,9 +791,7 @@ function startWakeWordDaemon() {
     env: { ...process.env },
   });
 
-  let stderrBuf = '';
   wakeWordProcess.stderr.on('data', (d) => {
-    stderrBuf += d.toString();
     console.log('🗣️  Wake word stderr:', d.toString().trim());
   });
 
@@ -708,6 +802,7 @@ function startWakeWordDaemon() {
         console.log('🗣️  Wake word detected! Triggering voice pipeline...');
         handleWakeWordDetection();
       } else if (line.startsWith('WAKE_WORD_READY:')) {
+        wakeWordRestartAttempts = 0;
         console.log('🗣️  ' + line.replace('WAKE_WORD_READY:', ''));
       } else if (line.startsWith('WAKE_WORD_ERROR:')) {
         console.error('🗣️  Wake word error:', line.replace('WAKE_WORD_ERROR:', ''));
@@ -718,6 +813,12 @@ function startWakeWordDaemon() {
   wakeWordProcess.on('close', (code) => {
     console.log(`🗣️  Wake word daemon exited with code ${code}`);
     wakeWordProcess = null;
+    if (code !== 0 && wakeWordRestartAttempts < 5) {
+      const delay = Math.min(1000 * Math.pow(2, wakeWordRestartAttempts), 30000);
+      wakeWordRestartAttempts++;
+      console.log(`🗣️  Restarting wake word daemon in ${delay}ms (attempt ${wakeWordRestartAttempts})`);
+      setTimeout(() => startWakeWordDaemon(), delay);
+    }
   });
 
   wakeWordProcess.on('error', (err) => {
@@ -727,13 +828,11 @@ function startWakeWordDaemon() {
 }
 
 async function handleWakeWordDetection() {
+  resumeWakeWord();
   if (overlayBusy) return;
 
-  quickAck("Hey, what do you need?");
-
+  quickAckAsync("Hey, what do you need?");
   await runOverlayVoicePipeline('listen_smart');
-
-  resumeWakeWord();
 }
 
 function resumeWakeWord() {
@@ -744,7 +843,13 @@ function resumeWakeWord() {
 
 function stopWakeWordDaemon() {
   if (wakeWordProcess && !wakeWordProcess.killed) {
-    wakeWordProcess.kill();
+    wakeWordProcess.kill('SIGTERM');
+    const proc = wakeWordProcess;
+    setTimeout(() => {
+      if (proc && !proc.killed) {
+        try { proc.kill('SIGKILL'); } catch (e) {}
+      }
+    }, 2000);
     wakeWordProcess = null;
   }
 }
@@ -769,6 +874,7 @@ app.whenReady().then(() => {
     console.log('⌨️  Global shortcut registered: Cmd+Shift+Space');
 
     startWakeWordDaemon();
+    startVoiceEngineDaemon();
 
     validateBedrockAccess().then(result => {
       if (!result.ok) {
@@ -796,6 +902,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopWakeWordDaemon();
+  stopVoiceEngineDaemon();
 });
 
 app.on('window-all-closed', () => app.quit());
@@ -814,29 +921,12 @@ ipcMain.handle('execute-command', async (event, userInput) => {
     const plan = await classifyIntent(userInput, session);
     const results = await executeActions(plan, userInput);
 
-    // Check if any action already produced a description (describe_screen, read_document, recall_memory, check_notifications)
-    const selfDescribedResult = results.find(r => r.description);
-    let observation;
-
-    if (selfDescribedResult) {
-      observation = selfDescribedResult.description;
-      speakAndWait(observation);
-    } else {
-      const chromeTypes = new Set(['chrome_tab', 'chrome_newtab', 'chrome_profile', 'chrome_read', 'chrome_js', 'chrome_close_tab', 'chrome_switch_tab', 'browser_action']);
-      const touchesChrome = (plan.actions || []).some(a => chromeTypes.has(a.type));
-      if (touchesChrome) {
-        await updateSessionContext();
-      }
-      const runningApps = await getRunningApps();
-      const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
-      let contextSummary;
-      if (touchesChrome) {
-        contextSummary = `Active tab: ${session.activeTab.title} — ${session.activeTab.url}\nOpen tabs: ${session.openTabs.map(t => t.title).join(', ')}\nRunning apps: ${runningApps.slice(0, 15).join(', ')}\nPage content: ${session.activeTab.content.substring(0, 1000)}`;
-      } else {
-        contextSummary = `Running apps: ${runningApps.slice(0, 15).join(', ')}\nNote: No Chrome actions were performed — do NOT describe Chrome state.`;
-      }
-      observation = await generateObservation(userInput, contextSummary, actionsLog);
-    }
+    // Always-screenshot observe
+    await new Promise(r => setTimeout(r, 1000));
+    const obsScreenshot = '/tmp/nova_observe_ipc.png';
+    await takeScreenshot(obsScreenshot);
+    const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
+    const observation = await observeScreen(obsScreenshot, userInput, actionsLog);
     session.lastResult = observation;
 
     const primaryAction = (plan.actions || [])[0]?.type || 'unknown';
@@ -1080,6 +1170,7 @@ ipcMain.handle('complete-setup', () => {
   });
   console.log('⌨️  Global shortcut registered: Cmd+Shift+Space');
   startWakeWordDaemon();
+  startVoiceEngineDaemon();
 
   return { success: true };
 });

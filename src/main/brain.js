@@ -549,4 +549,62 @@ async function validateBedrockAccess() {
   }
 }
 
-module.exports = { classifyIntent, analyzeScreenshot, generateObservation, describeScreen, summarizeDocument, validateBedrockAccess };
+async function observeScreen(screenshotPath, userCommand, actionLog) {
+  const imageBytes = fs.readFileSync(screenshotPath);
+  const base64Image = imageBytes.toString("base64");
+
+  const prompt = `The user asked: "${userCommand}"
+
+Actions taken:
+${actionLog}
+
+Look at the screenshot and describe what you see on screen now. Relate it to the actions taken and the user's request. Be conversational, specific, and concise (2-3 sentences). Mention any visible results, notifications, or relevant content.`;
+
+  const body = JSON.stringify({
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            image: {
+              format: "png",
+              source: { bytes: base64Image },
+            },
+          },
+          { text: prompt },
+        ],
+      },
+    ],
+    system: [
+      {
+        text: "You are NovaAssist, a voice AI assistant. Describe what is currently visible on the user's screen, relating it to what they asked and what actions were performed. Be concise and conversational. No markdown, no bullet points.",
+      },
+    ],
+    inferenceConfig: {
+      maxTokens: 300,
+      temperature: 0.3,
+    },
+  });
+
+  const command = new InvokeModelCommand({
+    modelId: "us.amazon.nova-2-lite-v1:0",
+    body,
+    contentType: "application/json",
+    accept: "application/json",
+  });
+
+  try {
+    const response = await client.send(command);
+    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+    const blocks = responseBody.output?.message?.content || responseBody.content || [];
+    for (const block of blocks) {
+      if (block.text) return block.text;
+    }
+    return "Done.";
+  } catch (e) {
+    console.error("observeScreen error:", e.message);
+    return "Done.";
+  }
+}
+
+module.exports = { classifyIntent, analyzeScreenshot, generateObservation, observeScreen, describeScreen, summarizeDocument, validateBedrockAccess };

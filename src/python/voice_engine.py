@@ -1,7 +1,7 @@
 """
-NovaAssist Voice Engine — Based exactly on AWS official SimpleNovaSonic sample
+NovaAssist Voice Engine — STT via AWS Nova Sonic, with Silero VAD and daemon mode.
 """
-import os, sys, asyncio, base64, json, uuid, subprocess, pyaudio
+import os, sys, asyncio, base64, json, uuid, subprocess, pyaudio, struct as _struct
 
 SONIC_AVAILABLE = False
 try:
@@ -13,11 +13,28 @@ try:
 except ImportError:
     print("VOICE_LOG:Nova Sonic SDK not available (requires Python 3.12+), using fallback STT", file=sys.stderr)
 
+SILERO_AVAILABLE = False
+_silero_model = None
+try:
+    import torch
+    from silero_vad import load_silero_vad
+    SILERO_AVAILABLE = True
+except ImportError:
+    print("VOICE_LOG:Silero VAD not available, using RMS fallback", file=sys.stderr)
+
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 CHANNELS = 1
 FORMAT = pyaudio.paInt16
 CHUNK_SIZE = 1024
+VAD_CHUNK_SIZE = 512
+
+
+def _get_silero_model():
+    global _silero_model
+    if _silero_model is None and SILERO_AVAILABLE:
+        _silero_model = load_silero_vad()
+    return _silero_model
 
 
 class SimpleNovaSonic:
@@ -35,6 +52,7 @@ class SimpleNovaSonic:
         self.display_assistant_text = False
         self.role = None
         self.transcription = ""
+        self.transcription_complete = False
 
     def _initialize_client(self):
         config = Config(
@@ -147,7 +165,6 @@ class SimpleNovaSonic:
         '''
         await self.send_event(text_content_end)
 
-        # Start processing responses immediately
         self.response = asyncio.create_task(self._process_responses())
 
     async def start_audio_input(self):
@@ -239,13 +256,16 @@ class SimpleNovaSonic:
                                     self.display_assistant_text = True
                                 else:
                                     self.display_assistant_text = False
+                        elif 'contentEnd' in json_data['event']:
+                            if self.role == "USER" and self.transcription:
+                                self.transcription_complete = True
                         elif 'textOutput' in json_data['event']:
                             text = json_data['event']['textOutput']['content']
                             if self.role == "USER":
                                 self.transcription += text
-                                print(f"VOICE_LOG:📝 Heard: {text}", file=sys.stderr)
+                                print(f"VOICE_LOG:Heard: {text}", file=sys.stderr)
                             elif self.role == "ASSISTANT":
-                                print(f"VOICE_LOG:🤖 Sonic: {text}", file=sys.stderr)
+                                print(f"VOICE_LOG:Sonic: {text}", file=sys.stderr)
                         elif 'audioOutput' in json_data['event']:
                             audio_content = json_data['event']['audioOutput']['content']
                             audio_bytes = base64.b64decode(audio_content)
@@ -254,6 +274,17 @@ class SimpleNovaSonic:
             if self.is_active:
                 print(f"VOICE_LOG:Response error: {e}", file=sys.stderr)
 
+    async def drain_audio_queue(self):
+        """Drain audio queue without playing -- STT-only mode."""
+        try:
+            while self.is_active:
+                try:
+                    await asyncio.wait_for(self.audio_queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+        except Exception:
+            pass
+
     async def play_audio(self):
         p = pyaudio.PyAudio()
         stream = p.open(format=FORMAT, channels=CHANNELS, rate=OUTPUT_SAMPLE_RATE, output=True)
@@ -261,7 +292,7 @@ class SimpleNovaSonic:
             while self.is_active:
                 audio_data = await self.audio_queue.get()
                 stream.write(audio_data)
-        except Exception as e:
+        except Exception:
             pass
         finally:
             stream.stop_stream()
@@ -271,7 +302,7 @@ class SimpleNovaSonic:
     async def capture_audio(self):
         p = pyaudio.PyAudio()
         stream = p.open(format=FORMAT, channels=CHANNELS, rate=INPUT_SAMPLE_RATE, input=True, frames_per_buffer=CHUNK_SIZE)
-        print("VOICE_LOG:🎙️ Speak now... Press Enter to stop.", file=sys.stderr)
+        print("VOICE_LOG:Speak now... Press Enter to stop.", file=sys.stderr)
         await self.start_audio_input()
         try:
             while self.is_active:
@@ -287,10 +318,10 @@ class SimpleNovaSonic:
             await self.end_audio_input()
 
     async def capture_timed(self, duration=8):
-        """Capture audio for a fixed duration instead of until Enter."""
+        """Capture audio for a fixed duration."""
         p = pyaudio.PyAudio()
         stream = p.open(format=FORMAT, channels=CHANNELS, rate=INPUT_SAMPLE_RATE, input=True, frames_per_buffer=CHUNK_SIZE)
-        print("VOICE_LOG:🎙️ Listening...", file=sys.stderr)
+        print("VOICE_LOG:Listening...", file=sys.stderr)
         await self.start_audio_input()
         total = int(INPUT_SAMPLE_RATE / CHUNK_SIZE * duration)
         for _ in range(total):
@@ -302,16 +333,18 @@ class SimpleNovaSonic:
         stream.stop_stream()
         stream.close()
         p.terminate()
-        print("VOICE_LOG:✅ Done", file=sys.stderr)
+        print("VOICE_LOG:Done", file=sys.stderr)
         await self.end_audio_input()
 
-    async def capture_smart(self, max_duration=15, silence_threshold=500, silence_timeout=3.0):
-        """Capture audio with silence detection — stops early when the user stops speaking."""
-        import struct as _struct
+    async def capture_smart(self, max_duration=15, silence_threshold=500, silence_timeout=1.5):
+        """Capture audio with VAD-based end-of-speech detection."""
         p = pyaudio.PyAudio()
         stream = p.open(format=FORMAT, channels=CHANNELS, rate=INPUT_SAMPLE_RATE, input=True, frames_per_buffer=CHUNK_SIZE)
-        print("VOICE_LOG:🎙️ Listening (smart mode)...", file=sys.stderr)
+        print("VOICE_LOG:Listening (smart mode)...", file=sys.stderr)
         await self.start_audio_input()
+
+        vad_model = _get_silero_model()
+        use_vad = vad_model is not None
 
         total_chunks = int(INPUT_SAMPLE_RATE / CHUNK_SIZE * max_duration)
         speech_detected = False
@@ -319,35 +352,62 @@ class SimpleNovaSonic:
         chunks_per_second = INPUT_SAMPLE_RATE / CHUNK_SIZE
         silence_chunk_limit = int(silence_timeout * chunks_per_second)
 
+        vad_buffer = b''
+        vad_silent_ms = 0
+        vad_speech_detected = False
+        vad_frame_bytes = VAD_CHUNK_SIZE * 2  # 16-bit samples
+
         for i in range(total_chunks):
             if not self.is_active:
                 break
             audio_data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
             await self.send_audio_chunk(audio_data)
 
-            samples = _struct.unpack(f"<{CHUNK_SIZE}h", audio_data)
-            rms = (sum(s * s for s in samples) / CHUNK_SIZE) ** 0.5
+            if use_vad:
+                vad_buffer += audio_data
+                while len(vad_buffer) >= vad_frame_bytes:
+                    frame = vad_buffer[:vad_frame_bytes]
+                    vad_buffer = vad_buffer[vad_frame_bytes:]
+                    samples = _struct.unpack(f"<{VAD_CHUNK_SIZE}h", frame)
+                    tensor = torch.FloatTensor(samples) / 32768.0
+                    speech_prob = vad_model(tensor, INPUT_SAMPLE_RATE).item()
+                    frame_ms = VAD_CHUNK_SIZE * 1000 / INPUT_SAMPLE_RATE
 
-            if rms > silence_threshold:
-                speech_detected = True
-                silent_chunks = 0
-            elif speech_detected:
-                silent_chunks += 1
-                if silent_chunks >= silence_chunk_limit:
-                    print(f"VOICE_LOG:🔇 Silence detected after speech ({silence_timeout}s), stopping capture", file=sys.stderr)
-                    break
+                    if speech_prob > 0.5:
+                        vad_speech_detected = True
+                        vad_silent_ms = 0
+                    elif vad_speech_detected:
+                        vad_silent_ms += frame_ms
+                        if vad_silent_ms >= 750:
+                            print(f"VOICE_LOG:VAD silence detected (750ms), stopping capture", file=sys.stderr)
+                            stream.stop_stream()
+                            stream.close()
+                            p.terminate()
+                            await self.end_audio_input()
+                            return
+            else:
+                samples = _struct.unpack(f"<{CHUNK_SIZE}h", audio_data)
+                rms = (sum(s * s for s in samples) / CHUNK_SIZE) ** 0.5
+                if rms > silence_threshold:
+                    speech_detected = True
+                    silent_chunks = 0
+                elif speech_detected:
+                    silent_chunks += 1
+                    if silent_chunks >= silence_chunk_limit:
+                        print(f"VOICE_LOG:RMS silence detected ({silence_timeout}s), stopping capture", file=sys.stderr)
+                        break
 
             await asyncio.sleep(0.01)
 
         stream.stop_stream()
         stream.close()
         p.terminate()
-        print("VOICE_LOG:✅ Done (smart)", file=sys.stderr)
+        print("VOICE_LOG:Done (smart)", file=sys.stderr)
         await self.end_audio_input()
 
 
 async def run_interactive():
-    """Interactive mode — continuous conversation, press Enter to stop."""
+    """Interactive mode -- continuous conversation, press Enter to stop."""
     nova = SimpleNovaSonic()
     await nova.start_session()
     playback_task = asyncio.create_task(nova.play_audio())
@@ -364,17 +424,24 @@ async def run_interactive():
     return nova.transcription
 
 
+async def _wait_for_transcription(nova, max_wait=0.5):
+    """Poll for transcription completion instead of hardcoded sleep."""
+    elapsed = 0
+    while elapsed < max_wait and not nova.transcription_complete:
+        await asyncio.sleep(0.05)
+        elapsed += 0.05
+
+
 async def run_listen(duration=8):
-    """Listen for fixed duration, return transcription."""
+    """Listen for fixed duration, return transcription. STT-only -- no audio playback."""
     nova = SimpleNovaSonic()
     await nova.start_session()
-    playback_task = asyncio.create_task(nova.play_audio())
+    drain_task = asyncio.create_task(nova.drain_audio_queue())
     await nova.capture_timed(duration=duration)
-    # Wait for Sonic to finish responding
-    await asyncio.sleep(3)
+    await _wait_for_transcription(nova)
     nova.is_active = False
-    playback_task.cancel()
-    await asyncio.gather(playback_task, return_exceptions=True)
+    drain_task.cancel()
+    await asyncio.gather(drain_task, return_exceptions=True)
     if nova.response and not nova.response.done():
         nova.response.cancel()
     try:
@@ -384,16 +451,16 @@ async def run_listen(duration=8):
     return nova.transcription
 
 
-async def run_listen_smart(max_duration=15, silence_timeout=3.0):
-    """Listen with silence detection — exits early when the user stops speaking."""
+async def run_listen_smart(max_duration=15, silence_timeout=1.5):
+    """Listen with silence detection, STT-only -- no audio playback."""
     nova = SimpleNovaSonic()
     await nova.start_session()
-    playback_task = asyncio.create_task(nova.play_audio())
+    drain_task = asyncio.create_task(nova.drain_audio_queue())
     await nova.capture_smart(max_duration=max_duration, silence_timeout=silence_timeout)
-    await asyncio.sleep(3)
+    await _wait_for_transcription(nova)
     nova.is_active = False
-    playback_task.cancel()
-    await asyncio.gather(playback_task, return_exceptions=True)
+    drain_task.cancel()
+    await asyncio.gather(drain_task, return_exceptions=True)
     if nova.response and not nova.response.done():
         nova.response.cancel()
     try:
@@ -433,9 +500,65 @@ def fallback_listen(duration=6):
         return ""
 
 
+async def run_daemon():
+    """Long-running daemon mode: read commands from stdin, write results to stdout."""
+    print("VOICE_DAEMON_READY", flush=True)
+    print("VOICE_LOG:Daemon started, waiting for commands...", file=sys.stderr)
+
+    loop = asyncio.get_event_loop()
+    while True:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if not line:
+            break
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = line.split()
+        cmd = parts[0].upper()
+
+        use_sonic = SONIC_AVAILABLE and _has_aws_credentials()
+
+        if cmd == "LISTEN":
+            dur = int(parts[1]) if len(parts) > 1 else 8
+            if use_sonic:
+                try:
+                    txt = await _run_with_timeout(run_listen(dur), timeout_sec=dur + 10)
+                    print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic"}), flush=True)
+                except Exception as e:
+                    print(f"VOICE_LOG:Sonic failed: {e}, using fallback", file=sys.stderr)
+                    txt = fallback_listen(dur)
+                    print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "fallback"}), flush=True)
+            else:
+                txt = fallback_listen(dur)
+                print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "fallback"}), flush=True)
+
+        elif cmd == "LISTEN_SMART":
+            max_dur = int(parts[1]) if len(parts) > 1 else 15
+            silence_sec = float(parts[2]) if len(parts) > 2 else 1.5
+            if use_sonic:
+                try:
+                    txt = await _run_with_timeout(run_listen_smart(max_dur, silence_sec), timeout_sec=max_dur + 10)
+                    print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "nova-sonic-smart"}), flush=True)
+                except Exception as e:
+                    print(f"VOICE_LOG:Sonic smart failed: {e}, using fallback", file=sys.stderr)
+                    txt = fallback_listen(max_dur)
+                    print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "fallback"}), flush=True)
+            else:
+                txt = fallback_listen(max_dur)
+                print("VOICE_RESULT:" + json.dumps({"transcription": txt, "error": None, "engine": "fallback"}), flush=True)
+
+        elif cmd == "QUIT":
+            break
+        else:
+            print("VOICE_RESULT:" + json.dumps({"transcription": "", "error": f"Unknown command: {cmd}", "engine": "none"}), flush=True)
+
+    print("VOICE_LOG:Daemon shutting down", file=sys.stderr)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 voice_engine.py [listen|speak|interactive] [text/duration]")
+        print("Usage: python3 voice_engine.py [listen|speak|listen_smart|interactive|daemon]")
         sys.exit(1)
 
     mode = sys.argv[1]
@@ -444,7 +567,10 @@ if __name__ == "__main__":
     if not _has_aws_credentials():
         print("VOICE_LOG:No AWS credentials found, using fallback STT", file=sys.stderr)
 
-    if mode == "listen":
+    if mode == "daemon":
+        asyncio.run(run_daemon())
+
+    elif mode == "listen":
         dur = int(sys.argv[2]) if len(sys.argv) > 2 else 8
         if use_sonic:
             try:
@@ -465,7 +591,7 @@ if __name__ == "__main__":
 
     elif mode == "listen_smart":
         max_dur = int(sys.argv[2]) if len(sys.argv) > 2 else 15
-        silence_sec = float(sys.argv[3]) if len(sys.argv) > 3 else 3.0
+        silence_sec = float(sys.argv[3]) if len(sys.argv) > 3 else 1.5
         if use_sonic:
             try:
                 txt = asyncio.run(_run_with_timeout(run_listen_smart(max_dur, silence_sec), timeout_sec=max_dur + 10))
