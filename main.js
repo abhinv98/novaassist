@@ -123,6 +123,32 @@ function addRecentAction(text) {
   if (session.recentActions.length > 10) session.recentActions.shift();
 }
 
+// ─── Audio Ducking ───────────────────────────────────────────────────────────
+
+let preDuckVolume = null;
+
+function duckAudio() {
+  try {
+    const vol = execSync("osascript -e 'output volume of (get volume settings)'").toString().trim();
+    preDuckVolume = parseInt(vol, 10);
+    const ducked = Math.max(10, Math.round(preDuckVolume * 0.25));
+    execSync(`osascript -e 'set volume output volume ${ducked}'`);
+  } catch (e) {
+    console.error('duckAudio error:', e.message);
+  }
+}
+
+function restoreAudio() {
+  try {
+    if (preDuckVolume !== null) {
+      execSync(`osascript -e 'set volume output volume ${preDuckVolume}'`);
+      preDuckVolume = null;
+    }
+  } catch (e) {
+    console.error('restoreAudio error:', e.message);
+  }
+}
+
 // ─── Instant Acknowledgment ──────────────────────────────────────────────────
 
 function quickAck(text) {
@@ -584,6 +610,7 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
 
     sendOverlayUpdate({ state: 'thinking', status: 'Got it — thinking...', transcript: text });
     session.lastCommand = text;
+    session.lastResult = '';
 
     // Parallelize: ack + context + memory fetch
     const [, , recalled] = await Promise.all([
@@ -610,14 +637,20 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
 
     if (!overlayBusy) return;
 
-    // Always-screenshot observe: capture what's on screen after actions settle
     sendOverlayUpdate({ state: 'thinking', status: 'Observing...', transcript: '' });
 
-    await new Promise(r => setTimeout(r, 1000));
-    const obsScreenshot = '/tmp/nova_observe.png';
-    await takeScreenshot(obsScreenshot);
-    const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
-    const observation = await observeScreen(obsScreenshot, text, actionsLog);
+    const selfDescribed = results.find(r => r.description);
+    let observation;
+
+    if (selfDescribed) {
+      observation = selfDescribed.description;
+    } else {
+      await new Promise(r => setTimeout(r, 1000));
+      const obsScreenshot = '/tmp/nova_observe.png';
+      await takeScreenshot(obsScreenshot);
+      const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
+      observation = await observeScreen(obsScreenshot, text, actionsLog);
+    }
 
     session.lastResult = observation;
     console.log('👁️  Observation:', observation);
@@ -629,11 +662,13 @@ async function runOverlayVoicePipeline(listenMode = 'listen') {
     sendOverlayUpdate({ state: 'done', status: displayObs, transcript: '' });
 
     await speakAndWaitAsync(observation);
+    restoreAudio();
 
     await new Promise(r => setTimeout(r, 1500));
   } catch (err) {
     console.error('Overlay pipeline error:', err);
     sendOverlayUpdate({ state: 'error', status: 'Error: ' + (err.message || 'unknown'), transcript: '' });
+    restoreAudio();
     await new Promise(r => setTimeout(r, 2000));
   } finally {
     hideOverlay();
@@ -831,6 +866,7 @@ async function handleWakeWordDetection() {
   resumeWakeWord();
   if (overlayBusy) return;
 
+  duckAudio();
   quickAckAsync("Hey, what do you need?");
   await runOverlayVoicePipeline('listen_smart');
 }
@@ -914,26 +950,36 @@ async function openChromeTab(url) {
 }
 
 ipcMain.handle('execute-command', async (event, userInput) => {
+  duckAudio();
   try {
     await updateSessionContext();
     session.lastCommand = userInput;
+    session.lastResult = '';
 
     const plan = await classifyIntent(userInput, session);
     const results = await executeActions(plan, userInput);
 
-    // Always-screenshot observe
-    await new Promise(r => setTimeout(r, 1000));
-    const obsScreenshot = '/tmp/nova_observe_ipc.png';
-    await takeScreenshot(obsScreenshot);
-    const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
-    const observation = await observeScreen(obsScreenshot, userInput, actionsLog);
+    const selfDescribed = results.find(r => r.description);
+    let observation;
+
+    if (selfDescribed) {
+      observation = selfDescribed.description;
+    } else {
+      await new Promise(r => setTimeout(r, 1000));
+      const obsScreenshot = '/tmp/nova_observe_ipc.png';
+      await takeScreenshot(obsScreenshot);
+      const actionsLog = (plan.actions || []).map(a => `${a.type}: ${a.value || ''}`).join('\n');
+      observation = await observeScreen(obsScreenshot, userInput, actionsLog);
+    }
     session.lastResult = observation;
 
     const primaryAction = (plan.actions || [])[0]?.type || 'unknown';
     storeMemory(observation, primaryAction, true).catch((e) => console.error('Memory store error:', e.message));
 
+    restoreAudio();
     return { plan, results, observation, session: { openTabs: session.openTabs, activeTab: { title: session.activeTab.title, url: session.activeTab.url } } };
   } catch (err) {
+    restoreAudio();
     return { error: err.message, plan: { speak: 'Error: ' + err.message, actions: [], reasoning: '' }, results: [] };
   }
 });

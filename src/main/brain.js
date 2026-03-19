@@ -88,6 +88,11 @@ CRITICAL RULES:
 - For simple page interactions where you know exactly what to do (scroll, go back): use "chrome_js" directly.
 - For tab management: use chrome_close_tab, chrome_switch_tab, or chrome_newtab.
 - ONLY use "browser_action" for tasks needing a NEW site with complex multi-step work.
+- NEVER use "browser_action" for simple Google searches -- use "chrome_tab" with a Google search URL.
+- NEVER use "browser_action" for searching on the current page -- use "chrome_read" + "chrome_js".
+- NEVER use "browser_action" when the user says "search for X" or "Google X" -- always use "chrome_tab".
+- "browser_action" opens a SEPARATE headless Chrome. Only use it for complex multi-step web tasks that require logging in, filling forms, or navigating multiple pages on a NEW site.
+- If the user says "search on the current tab" or "search this page", use chrome_read + chrome_js, NOT browser_action.
 - For Chrome profiles: use "chrome_profile" with a fuzzy name.
 - When the user says "take notes" or "note this down" or "write this down": use "notes_create" with what they want noted.
 - When the user says "read my notes" or "what did I write": use "notes_read".
@@ -554,11 +559,10 @@ async function observeScreen(screenshotPath, userCommand, actionLog) {
   const base64Image = imageBytes.toString("base64");
 
   const prompt = `The user asked: "${userCommand}"
-
 Actions taken:
 ${actionLog}
 
-Look at the screenshot and describe what you see on screen now. Relate it to the actions taken and the user's request. Be conversational, specific, and concise (2-3 sentences). Mention any visible results, notifications, or relevant content.`;
+Briefly confirm what was done (1 sentence). Do NOT describe the entire screen -- just confirm the action completed. Be conversational.`;
 
   const body = JSON.stringify({
     messages: [
@@ -577,11 +581,11 @@ Look at the screenshot and describe what you see on screen now. Relate it to the
     ],
     system: [
       {
-        text: "You are NovaAssist, a voice AI assistant. Describe what is currently visible on the user's screen, relating it to what they asked and what actions were performed. Be concise and conversational. No markdown, no bullet points.",
+        text: "You are NovaAssist, a voice AI assistant. Briefly confirm what action was completed based on what you see on screen. One sentence maximum. Do NOT describe the entire screen layout. Just confirm the action succeeded.",
       },
     ],
     inferenceConfig: {
-      maxTokens: 300,
+      maxTokens: 100,
       temperature: 0.3,
     },
   });
