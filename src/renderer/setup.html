@@ -135,9 +135,8 @@ function PermissionsStep({ onNext }) {
 
   const requestMic = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop());
-      setMicrophone('granted');
+      const granted = await window.novaAssist.requestMicrophone();
+      setMicrophone(granted ? 'granted' : 'denied');
     } catch (e) {
       setMicrophone('denied');
     }

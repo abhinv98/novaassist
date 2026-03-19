@@ -1025,6 +1025,16 @@ ipcMain.handle('request-accessibility', () => {
   }
 });
 
+ipcMain.handle('request-microphone', async () => {
+  try {
+    const granted = await systemPreferences.askForMediaAccess('microphone');
+    return granted;
+  } catch (e) {
+    console.error('request-microphone error:', e.message);
+    return false;
+  }
+});
+
 ipcMain.handle('check-all-permissions', async () => {
   try {
     const mic = systemPreferences.getMediaAccessStatus('microphone');

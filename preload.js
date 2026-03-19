@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('novaAssist', {
   checkAccessibility: () => ipcRenderer.invoke('check-accessibility'),
   requestAccessibility: () => ipcRenderer.invoke('request-accessibility'),
   checkAllPermissions: () => ipcRenderer.invoke('check-all-permissions'),
+  requestMicrophone: () => ipcRenderer.invoke('request-microphone'),
   requestScreenRecording: () => ipcRenderer.invoke('request-screen-recording'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   verifyAws: (creds) => ipcRenderer.invoke('verify-aws', creds),
